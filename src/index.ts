@@ -46,5 +46,15 @@ export type { Notification, NotificationType } from './server/notifications';
 export { AgentDirectory, DEFAULT_TTL_SECONDS } from './registry/directory';
 export type { AgentEntry, DirectoryQuery } from './registry/directory';
 
+// P2P
+export { P2PManager } from './server/p2p';
+export type { InviteCode, P2PMatch } from './server/p2p';
+
+// Agent & LLM
+export { Agent, loadAgentConfig, loadOpenClawIdentity, buildSystemPrompt } from './agent/agent';
+export type { AgentConfig, ConversationMessage, AgentStatus, ConversationEvent, OpenClawIdentity } from './agent/agent';
+export { LLMClient, loadLLMConfig } from './agent/llm';
+export type { ChatMessage, LLMConfig, TokenUsage } from './agent/llm';
+
 // Constants
 export const MAX_AGENTS_PER_GROUP = 7;

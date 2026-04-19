@@ -29,6 +29,10 @@ import { InvitationManager } from './invitations';
 import type { Invitation } from './invitations';
 import { SessionManager } from './sessions';
 import { NotificationManager } from './notifications';
+import { P2PManager } from './p2p';
+import { Agent, loadAgentConfig, loadOpenClawIdentity } from '../agent/agent';
+import type { OpenClawIdentity } from '../agent/agent';
+import type { LLMConfig } from '../agent/llm';
 import type {
   ServerConfig,
   AgentConnection,
@@ -46,6 +50,11 @@ export { SessionManager } from './sessions';
 export type { CollaborationSession, SessionStatus, SessionParticipant } from './sessions';
 export { NotificationManager } from './notifications';
 export type { Notification, NotificationType } from './notifications';
+export { P2PManager } from './p2p';
+export type { InviteCode, P2PMatch } from './p2p';
+export { Agent, loadAgentConfig, loadOpenClawIdentity, buildSystemPrompt } from '../agent/agent';
+export type { OpenClawIdentity } from '../agent/agent';
+export { LLMClient, loadLLMConfig } from '../agent/llm';
 
 /**
  * WebSocket server manager.
@@ -70,6 +79,16 @@ export class WebSocketServerManager extends EventEmitter {
   private sessionManager: SessionManager;
   /** Sahiplere bildirim yöneticisi */
   private notificationManager: NotificationManager;
+  /** P2P bağlantı yöneticisi */
+  private p2pManager: P2PManager;
+  /** Dashboard WebSocket client'ları (clientId → ws) */
+  private dashboardClients: Map<string, WebSocket> = new Map();
+  /** Her client'ın agent'ı (clientId → Agent) */
+  private clientAgents: Map<string, Agent> = new Map();
+  /** Aktif konuşma döngüleri (clientId → abort flag) */
+  private activeConversations: Map<string, { running: boolean }> = new Map();
+  /** OpenClaw kimlik bilgileri (sunucu başlangıcında yüklenir) */
+  private openclawIdentity: OpenClawIdentity | null = null;
 
   constructor(config: ServerConfig & { networkConfig?: NetworkEgressConfig }) {
     super();
@@ -86,15 +105,29 @@ export class WebSocketServerManager extends EventEmitter {
     // Compose consent handler from filter + manager
     this.consentHandler = new ServerConsentHandler(networkFilter, consentManager);
 
-    // Initialize invitation, session, notification managers
+    // Initialize invitation, session, notification, p2p managers
     this.invitationManager = new InvitationManager();
     this.sessionManager = new SessionManager();
     this.notificationManager = new NotificationManager();
+    this.p2pManager = new P2PManager();
 
     // Wire session end events to notifications
     this.sessionManager.onSessionEnd((session) => {
       this.notificationManager.notifySessionEnded(session);
     });
+
+    // OpenClaw workspace'den agent kimliğini yükle
+    this.openclawIdentity = loadOpenClawIdentity();
+    if (this.openclawIdentity) {
+      console.log(`[WS Server] OpenClaw identity loaded: ${this.openclawIdentity.name} ${this.openclawIdentity.emoji}`);
+    }
+  }
+
+  /**
+   * Yüklenen OpenClaw kimliğini döner.
+   */
+  getOpenClawIdentity(): OpenClawIdentity | null {
+    return this.openclawIdentity;
   }
 
   /**
@@ -130,6 +163,13 @@ export class WebSocketServerManager extends EventEmitter {
    */
   getNotificationManager(): NotificationManager {
     return this.notificationManager;
+  }
+
+  /**
+   * P2P manager instance'ını döner.
+   */
+  getP2PManager(): P2PManager {
+    return this.p2pManager;
   }
 
   /**
@@ -228,14 +268,14 @@ export class WebSocketServerManager extends EventEmitter {
 
     const uiDir = this.resolveUiPath();
 
-    // / → ui/index.html veya ui/app/page.tsx (fallback)
+    // / → ui/dashboard.html (yeni dashboard)
     if (parsedPath === '/' || parsedPath === '/index.html') {
-      const indexPath = path.join(uiDir, 'index.html');
-      fs.access(indexPath, fs.constants.R_OK, (err) => {
+      const dashboardPath = path.join(uiDir, 'dashboard.html');
+      fs.access(dashboardPath, fs.constants.R_OK, (err) => {
         if (!err) {
-          this.serveStaticFile(res, indexPath, uiDir);
+          this.serveStaticFile(res, dashboardPath, uiDir);
         } else {
-          // Next.js app varsa bilgilendirici bir HTML döndür
+          // Fallback: basit bilgi sayfası
           res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
           res.end(`<!DOCTYPE html>
 <html lang="en">
@@ -262,13 +302,20 @@ export class WebSocketServerManager extends EventEmitter {
       <p><strong>WebSocket:</strong> <code>ws://localhost:${this.config.port}</code></p>
       <p><strong>Health:</strong> <a href="/health">/health</a></p>
       <p><strong>Stats:</strong> <a href="/api/stats">/api/stats</a></p>
-      <p><strong>UI:</strong> Next.js app — run <code>cd ui && npm run dev</code> for full UI</p>
+      <p>Dashboard dosyası bulunamadı. <code>ui/dashboard.html</code> oluşturun.</p>
     </div>
   </div>
 </body>
 </html>`);
         }
       });
+      return;
+    }
+
+    // /dashboard.js → ui/dashboard.js serve et
+    if (parsedPath === '/dashboard.js') {
+      const jsPath = path.join(uiDir, 'dashboard.js');
+      this.serveStaticFile(res, jsPath, uiDir);
       return;
     }
 
@@ -356,6 +403,7 @@ export class WebSocketServerManager extends EventEmitter {
           this.startHeartbeat();
           this.invitationManager.startCleanup();
           this.sessionManager.startCleanup();
+          this.p2pManager.startCleanup();
           resolve();
         });
 
@@ -372,6 +420,492 @@ export class WebSocketServerManager extends EventEmitter {
   }
 
   /**
+   * Dashboard WebSocket bağlantısını işler.
+   * P2P davet kodu, agent mesajları ve konuşma kontrolü bu kanaldan yapılır.
+   */
+  private handleDashboardConnection(ws: WebSocket): void {
+    const clientId = crypto.randomUUID();
+    this.dashboardClients.set(clientId, ws);
+
+    // Varsayılan agent oluştur
+    const agentConfig = loadAgentConfig();
+    const agent = new Agent(agentConfig);
+    this.clientAgents.set(clientId, agent);
+
+    console.log(`[WS Server] Dashboard client connected: ${clientId}`);
+
+    // Client'a hoşgeldin mesajı (OpenClaw kimlik bilgileri dahil)
+    this.sendDashboard(ws, {
+      type: 'welcome',
+      clientId,
+      agentName: agent.name,
+      agentSystemPrompt: agent.systemPrompt,
+      openclawIdentity: this.openclawIdentity ? {
+        name: this.openclawIdentity.name,
+        emoji: this.openclawIdentity.emoji,
+        creature: this.openclawIdentity.creature,
+        vibe: this.openclawIdentity.vibe,
+      } : null,
+    });
+
+    ws.on('message', (data: RawData) => {
+      try {
+        const message = JSON.parse(data.toString()) as Record<string, unknown>;
+        this.handleDashboardMessage(clientId, ws, message);
+      } catch (error) {
+        console.error('[WS Server] Dashboard message parse error:', error);
+        this.sendDashboard(ws, { type: 'error', message: 'Geçersiz mesaj formatı' });
+      }
+    });
+
+    ws.on('close', () => {
+      console.log(`[WS Server] Dashboard client disconnected: ${clientId}`);
+      // Aktif konuşmayı durdur
+      const conv = this.activeConversations.get(clientId);
+      if (conv) conv.running = false;
+      this.activeConversations.delete(clientId);
+
+      // P2P eşleşmesini temizle ve karşı tarafa bildir
+      const match = this.p2pManager.disconnectClient(clientId);
+      if (match) {
+        const peerId = match.hostClientId === clientId ? match.guestClientId : match.hostClientId;
+        const peerWs = this.dashboardClients.get(peerId);
+        if (peerWs && peerWs.readyState === WebSocket.OPEN) {
+          this.sendDashboard(peerWs, {
+            type: 'connection_status',
+            status: 'disconnected',
+            message: 'Karşı taraf bağlantıyı kesti',
+          });
+        }
+      }
+
+      this.dashboardClients.delete(clientId);
+      this.clientAgents.delete(clientId);
+    });
+
+    ws.on('error', (error) => {
+      console.error(`[WS Server] Dashboard client error (${clientId}):`, error);
+    });
+  }
+
+  /**
+   * Dashboard client'tan gelen mesajı işler.
+   */
+  private handleDashboardMessage(clientId: string, ws: WebSocket, message: Record<string, unknown>): void {
+    const msgType = message['type'] as string;
+
+    switch (msgType) {
+      case 'create_invitation':
+        this.handleCreateInvitation(clientId, ws, message);
+        break;
+      case 'join_invitation':
+        this.handleJoinInvitation(clientId, ws, message);
+        break;
+      case 'start_conversation':
+        this.handleStartConversation(clientId, ws, message);
+        break;
+      case 'stop_conversation':
+        this.handleStopConversation(clientId, ws);
+        break;
+      case 'update_agent':
+        this.handleUpdateAgent(clientId, ws, message);
+        break;
+      case 'update_llm':
+        this.handleUpdateLLM(clientId, ws, message);
+        break;
+      case 'end_session':
+        this.handleEndSession(clientId, ws);
+        break;
+      default:
+        this.sendDashboard(ws, { type: 'error', message: `Bilinmeyen mesaj tipi: ${msgType}` });
+    }
+  }
+
+  /**
+   * Davet kodu oluşturma.
+   */
+  private handleCreateInvitation(clientId: string, ws: WebSocket, message: Record<string, unknown>): void {
+    const agent = this.clientAgents.get(clientId);
+    const agentName = (message['agentName'] as string) || agent?.name || 'Agent';
+
+    try {
+      const invite = this.p2pManager.createInvitation(clientId, agentName);
+      this.sendDashboard(ws, {
+        type: 'invitation_created',
+        code: invite.code,
+        expiresAt: invite.expiresAt.toISOString(),
+      });
+      console.log(`[WS Server] Invite code created: ${invite.code} by ${clientId}`);
+    } catch (error) {
+      this.sendDashboard(ws, {
+        type: 'error',
+        message: error instanceof Error ? error.message : 'Davet oluşturulamadı',
+      });
+    }
+  }
+
+  /**
+   * Davete katılma.
+   */
+  private handleJoinInvitation(clientId: string, ws: WebSocket, message: Record<string, unknown>): void {
+    const code = message['code'] as string;
+    const agent = this.clientAgents.get(clientId);
+    const agentName = (message['agentName'] as string) || agent?.name || 'Agent';
+
+    if (!code) {
+      this.sendDashboard(ws, { type: 'error', message: 'Davet kodu gerekli' });
+      return;
+    }
+
+    try {
+      const match = this.p2pManager.joinInvitation(code, clientId, agentName);
+
+      // Her iki tarafa da bağlantı bildirimi gönder
+      const hostWs = this.dashboardClients.get(match.hostClientId);
+      const guestWs = this.dashboardClients.get(match.guestClientId);
+
+      if (hostWs && hostWs.readyState === WebSocket.OPEN) {
+        this.sendDashboard(hostWs, {
+          type: 'connection_status',
+          status: 'connected',
+          peerAgentName: match.guestAgentName,
+          role: 'host',
+          message: `${match.guestAgentName} bağlandı!`,
+        });
+      }
+
+      if (guestWs && guestWs.readyState === WebSocket.OPEN) {
+        this.sendDashboard(guestWs, {
+          type: 'connection_status',
+          status: 'connected',
+          peerAgentName: match.hostAgentName,
+          role: 'guest',
+          message: `${match.hostAgentName} ile bağlantı kuruldu!`,
+        });
+      }
+
+      console.log(`[WS Server] P2P match: ${match.hostAgentName} <-> ${match.guestAgentName}`);
+    } catch (error) {
+      this.sendDashboard(ws, {
+        type: 'error',
+        message: error instanceof Error ? error.message : 'Davete katılınamadı',
+      });
+    }
+  }
+
+  /**
+   * Konuşma başlatma — kullanıcı ilk görevi verir, agent döngüsü başlar.
+   */
+  private handleStartConversation(clientId: string, ws: WebSocket, message: Record<string, unknown>): void {
+    const task = message['task'] as string;
+    if (!task) {
+      this.sendDashboard(ws, { type: 'error', message: 'Görev metni gerekli' });
+      return;
+    }
+
+    const agent = this.clientAgents.get(clientId);
+    if (!agent) {
+      this.sendDashboard(ws, { type: 'error', message: 'Agent bulunamadı' });
+      return;
+    }
+
+    if (!agent.isLLMConfigured) {
+      this.sendDashboard(ws, { type: 'error', message: 'LLM API key yapılandırılmamış. Sağ paneldeki ayarlardan API key girin.' });
+      return;
+    }
+
+    // P2P eşleşmesi var mı?
+    const peerId = this.p2pManager.getPeerId(clientId);
+    if (!peerId) {
+      this.sendDashboard(ws, { type: 'error', message: 'Henüz bir eşleşme yok. Önce bağlantı kurun.' });
+      return;
+    }
+
+    const peerWs = this.dashboardClients.get(peerId);
+    const peerAgent = this.clientAgents.get(peerId);
+
+    if (!peerWs || peerWs.readyState !== WebSocket.OPEN || !peerAgent) {
+      this.sendDashboard(ws, { type: 'error', message: 'Karşı taraf bağlı değil.' });
+      return;
+    }
+
+    if (!peerAgent.isLLMConfigured) {
+      this.sendDashboard(ws, { type: 'error', message: 'Karşı tarafın LLM API key\'i yapılandırılmamış.' });
+      return;
+    }
+
+    // Aktif konuşma varsa durdur
+    const existingConv = this.activeConversations.get(clientId);
+    if (existingConv) existingConv.running = false;
+    const existingPeerConv = this.activeConversations.get(peerId);
+    if (existingPeerConv) existingPeerConv.running = false;
+
+    // Agent'ları sıfırla
+    agent.reset();
+    peerAgent.reset();
+
+    // Konuşma döngüsünü başlat
+    const conversationState = { running: true };
+    this.activeConversations.set(clientId, conversationState);
+    this.activeConversations.set(peerId, conversationState);
+
+    // Her iki tarafa konuşma başladı bildirimi
+    const startMsg = {
+      type: 'conversation_started',
+      task,
+      maxTurns: agent.maxTurns,
+    };
+    this.sendDashboard(ws, startMsg);
+    this.sendDashboard(peerWs, startMsg);
+
+    // Async konuşma döngüsü
+    this.runConversationLoop(clientId, peerId, task, conversationState).catch((error) => {
+      const errMsg = error instanceof Error ? error.message : 'Konuşma hatası';
+      console.error(`[WS Server] Conversation error:`, error);
+      const ws1 = this.dashboardClients.get(clientId);
+      const ws2 = this.dashboardClients.get(peerId);
+      if (ws1) this.sendDashboard(ws1, { type: 'conversation_error', error: errMsg });
+      if (ws2) this.sendDashboard(ws2, { type: 'conversation_error', error: errMsg });
+    });
+  }
+
+  /**
+   * Agent'lar arası konuşma döngüsü.
+   * Host agent ilk mesajı üretir, sonra sırayla karşılıklı devam eder.
+   */
+  private async runConversationLoop(
+    hostClientId: string,
+    guestClientId: string,
+    task: string,
+    state: { running: boolean }
+  ): Promise<void> {
+    const hostAgent = this.clientAgents.get(hostClientId);
+    const guestAgent = this.clientAgents.get(guestClientId);
+
+    if (!hostAgent || !guestAgent) return;
+
+    const maxTurns = Math.min(hostAgent.maxTurns, guestAgent.maxTurns);
+    let currentMessage = task;
+    let currentSender: 'host' | 'guest' = 'host';
+    let turn = 0;
+
+    while (state.running && turn < maxTurns) {
+      const senderAgent = currentSender === 'host' ? hostAgent : guestAgent;
+      const senderClientId = currentSender === 'host' ? hostClientId : guestClientId;
+      const receiverClientId = currentSender === 'host' ? guestClientId : hostClientId;
+      const fromRole = turn === 0 ? 'user' as const : 'peer' as const;
+
+      // Gönderen tarafın dashboard'unda "düşünüyor" bildirimi
+      const senderWs = this.dashboardClients.get(senderClientId);
+      const receiverWs = this.dashboardClients.get(receiverClientId);
+
+      if (senderWs) {
+        this.sendDashboard(senderWs, {
+          type: 'agent_thinking',
+          agentName: senderAgent.name,
+          turn: turn + 1,
+        });
+      }
+      if (receiverWs) {
+        this.sendDashboard(receiverWs, {
+          type: 'agent_thinking',
+          agentName: senderAgent.name,
+          turn: turn + 1,
+        });
+      }
+
+      // LLM çağrısı — streaming
+      let fullResponse = '';
+      try {
+        fullResponse = await senderAgent.processMessageStream(
+          currentMessage,
+          (chunk: string) => {
+            if (!state.running) return;
+            // Streaming chunk'larını her iki tarafa da gönder
+            const chunkMsg = {
+              type: 'agent_stream_chunk',
+              agentName: senderAgent.name,
+              chunk,
+              role: currentSender,
+            };
+            if (senderWs && senderWs.readyState === WebSocket.OPEN) {
+              this.sendDashboard(senderWs, chunkMsg);
+            }
+            if (receiverWs && receiverWs.readyState === WebSocket.OPEN) {
+              this.sendDashboard(receiverWs, chunkMsg);
+            }
+          },
+          fromRole
+        );
+      } catch (error) {
+        if (!state.running) return;
+        throw error;
+      }
+
+      if (!state.running) return;
+
+      turn++;
+
+      // Tam mesajı her iki tarafa gönder
+      const agentMsg = {
+        type: 'agent_message',
+        agentName: senderAgent.name,
+        content: fullResponse,
+        role: currentSender,
+        turn,
+        maxTurns,
+        stats: senderAgent.getStats(),
+      };
+
+      if (senderWs && senderWs.readyState === WebSocket.OPEN) {
+        this.sendDashboard(senderWs, agentMsg);
+      }
+      if (receiverWs && receiverWs.readyState === WebSocket.OPEN) {
+        this.sendDashboard(receiverWs, agentMsg);
+      }
+
+      // Sonraki tur için hazırlık
+      currentMessage = fullResponse;
+      currentSender = currentSender === 'host' ? 'guest' : 'host';
+    }
+
+    // Konuşma bitti
+    state.running = false;
+    this.activeConversations.delete(hostClientId);
+    this.activeConversations.delete(guestClientId);
+
+    const endMsg = {
+      type: 'conversation_ended',
+      reason: turn >= maxTurns ? 'max_turns_reached' : 'stopped',
+      totalTurns: turn,
+      hostStats: hostAgent.getStats(),
+      guestStats: guestAgent.getStats(),
+    };
+
+    const ws1 = this.dashboardClients.get(hostClientId);
+    const ws2 = this.dashboardClients.get(guestClientId);
+    if (ws1) this.sendDashboard(ws1, endMsg);
+    if (ws2) this.sendDashboard(ws2, endMsg);
+  }
+
+  /**
+   * Konuşmayı durdurma.
+   */
+  private handleStopConversation(clientId: string, ws: WebSocket): void {
+    const conv = this.activeConversations.get(clientId);
+    if (conv) {
+      conv.running = false;
+      this.sendDashboard(ws, { type: 'conversation_stopping' });
+    } else {
+      this.sendDashboard(ws, { type: 'error', message: 'Aktif konuşma yok' });
+    }
+  }
+
+  /**
+   * Agent ayarlarını güncelleme.
+   */
+  private handleUpdateAgent(clientId: string, ws: WebSocket, message: Record<string, unknown>): void {
+    const agent = this.clientAgents.get(clientId);
+    if (!agent) {
+      this.sendDashboard(ws, { type: 'error', message: 'Agent bulunamadı' });
+      return;
+    }
+
+    if (typeof message['name'] === 'string') {
+      agent.setName(message['name']);
+    }
+    if (typeof message['systemPrompt'] === 'string') {
+      agent.setSystemPrompt(message['systemPrompt']);
+    }
+
+    this.sendDashboard(ws, {
+      type: 'agent_updated',
+      name: agent.name,
+      systemPrompt: agent.systemPrompt,
+    });
+
+    // P2P eşleşmesi varsa karşı tarafa da bildir
+    const peerId = this.p2pManager.getPeerId(clientId);
+    if (peerId) {
+      const peerWs = this.dashboardClients.get(peerId);
+      if (peerWs && peerWs.readyState === WebSocket.OPEN) {
+        this.sendDashboard(peerWs, {
+          type: 'peer_agent_updated',
+          name: agent.name,
+        });
+      }
+    }
+  }
+
+  /**
+   * LLM ayarlarını güncelleme.
+   */
+  private handleUpdateLLM(clientId: string, ws: WebSocket, message: Record<string, unknown>): void {
+    const agent = this.clientAgents.get(clientId);
+    if (!agent) {
+      this.sendDashboard(ws, { type: 'error', message: 'Agent bulunamadı' });
+      return;
+    }
+
+    const updates: Partial<LLMConfig> = {};
+    if (typeof message['baseUrl'] === 'string') updates.baseUrl = message['baseUrl'];
+    if (typeof message['apiKey'] === 'string') updates.apiKey = message['apiKey'];
+    if (typeof message['model'] === 'string') updates.model = message['model'];
+
+    agent.updateLLMConfig(updates);
+
+    this.sendDashboard(ws, {
+      type: 'llm_updated',
+      configured: agent.isLLMConfigured,
+    });
+  }
+
+  /**
+   * Oturumu sonlandırma — P2P bağlantısını kopar.
+   */
+  private handleEndSession(clientId: string, ws: WebSocket): void {
+    // Konuşmayı durdur
+    const conv = this.activeConversations.get(clientId);
+    if (conv) conv.running = false;
+
+    // P2P bağlantısını temizle
+    const match = this.p2pManager.disconnectClient(clientId);
+
+    if (match) {
+      const peerId = match.hostClientId === clientId ? match.guestClientId : match.hostClientId;
+      const peerConv = this.activeConversations.get(peerId);
+      if (peerConv) peerConv.running = false;
+
+      const peerWs = this.dashboardClients.get(peerId);
+      if (peerWs && peerWs.readyState === WebSocket.OPEN) {
+        this.sendDashboard(peerWs, {
+          type: 'connection_status',
+          status: 'disconnected',
+          message: 'Karşı taraf oturumu sonlandırdı',
+        });
+      }
+    }
+
+    // Agent'ı sıfırla
+    const agent = this.clientAgents.get(clientId);
+    if (agent) agent.reset();
+
+    this.sendDashboard(ws, {
+      type: 'session_ended_ack',
+      message: 'Oturum sonlandırıldı',
+    });
+  }
+
+  /**
+   * Dashboard client'a JSON mesaj gönderir.
+   */
+  private sendDashboard(ws: WebSocket, data: Record<string, unknown>): void {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(data));
+    }
+  }
+
+  /**
    * Server'ı durdurur.
    */
   stop(): void {
@@ -379,6 +913,7 @@ export class WebSocketServerManager extends EventEmitter {
     this.invitationManager.stopCleanup();
     this.sessionManager.stopCleanup();
     this.sessionManager.endAll();
+    this.p2pManager.stopCleanup();
 
     // Tüm bağlantıları kapat
     for (const conn of this.connections.values()) {
@@ -386,6 +921,16 @@ export class WebSocketServerManager extends EventEmitter {
     }
     this.connections.clear();
     this.pendingAuth.clear();
+
+    // Dashboard client'ları kapat
+    for (const [id, ws] of this.dashboardClients.entries()) {
+      const conv = this.activeConversations.get(id);
+      if (conv) conv.running = false;
+      ws.close(1000, 'Server shutting down');
+    }
+    this.dashboardClients.clear();
+    this.clientAgents.clear();
+    this.activeConversations.clear();
 
     if (this.wss) {
       this.wss.close(() => {
@@ -404,12 +949,18 @@ export class WebSocketServerManager extends EventEmitter {
 
   /**
    * Yeni bağlantıyı işler.
-   * Auth challenge oluşturur ve mesaj/bağlantı event'lerini dinler.
+   * URL path'e göre dashboard client veya agent bağlantısı olarak yönlendirir.
    */
   private handleConnection(ws: WebSocket, req: Record<string, unknown>): void {
     const url = req.url as string | undefined;
     const clientId = url?.split('?')[0] || 'unknown';
     console.log(`[WS Server] New connection from ${clientId}`);
+
+    // Dashboard client'ları /dashboard path'inden bağlanır
+    if (url?.startsWith('/dashboard')) {
+      this.handleDashboardConnection(ws);
+      return;
+    }
 
     // Auth challenge oluştur (auth modülünden)
     const challenge = createAuthChallenge(this.authTimeout);
