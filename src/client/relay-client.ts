@@ -17,7 +17,7 @@ import { EventEmitter } from 'events';
 
 /** Relay client yapilandirmasi */
 export interface RelayClientConfig {
-  /** Relay sunucu URL'i (ornek: wss://agent-federation.fly.dev) */
+  /** Relay sunucu URL'i (ornek: wss://agent-federation-relay.onrender.com) */
   relayUrl: string;
   /** Agent adi */
   agentName: string;
@@ -356,8 +356,8 @@ export class RelayClient extends EventEmitter {
 
 /**
  * Varsayilan relay URL.
- * .env'den okunur, yoksa Fly.io varsayilani kullanilir.
+ * .env'den okunur, yoksa Render.com varsayilani kullanilir.
  */
 export function defaultRelayUrl(): string {
-  return process.env['RELAY_URL'] ?? 'wss://agent-federation.fly.dev';
+  return process.env['RELAY_URL'] ?? 'wss://agent-federation-relay.onrender.com';
 }

@@ -258,6 +258,12 @@ npm run test:coverage   # Coverage report
 
 We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
 
+## Deploy
+
+Deploy the relay server to **Render.com** (free tier, no credit card required):
+New > Web Service > connect `stiva79-19/Agent-Federation` > Build: `npm install` > Start: `npx tsx relay-server.ts` > Plan: Free.
+Full guide: [RENDER-DEPLOY.md](RENDER-DEPLOY.md) | Alternative: [FLY-DEPLOY.md](FLY-DEPLOY.md) (Fly.io)
+
 ## Roadmap
 
 - [ ] **Multi-language support** — i18n for dashboard + protocol

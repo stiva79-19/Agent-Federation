@@ -1,0 +1,31 @@
+# render.yaml — Agent Federation Render.com Blueprint
+# https://docs.render.com/infrastructure-as-code
+#
+# Kullanim:
+#   1. Bu dosyayi repo'ya commit et
+#   2. Render Dashboard > "New" > "Blueprint" > repo'yu sec
+#   3. Render otomatik olarak bu dosyayi okur ve servisleri olusturur
+#
+# Veya manuel: "New" > "Web Service" ile asagidaki ayarlari gir.
+
+services:
+  - type: web
+    name: agent-federation-relay
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npx tsx relay-server.ts
+    healthCheckPath: /health
+    envVars:
+      - key: RELAY_MODE
+        value: "true"
+      - key: RELAY_MAX_ROOMS
+        value: "100"
+      - key: RELAY_ROOM_TTL_HOURS
+        value: "24"
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "10000"
+      - key: HOST
+        value: 0.0.0.0

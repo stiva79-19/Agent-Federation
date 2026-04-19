@@ -228,6 +228,12 @@ npm run lint
 npm run format
 ```
 
+## Deploy
+
+Relay sunucusunu **Render.com**'a deploy et (ucretsiz, kredi karti gerekmez):
+New > Web Service > `stiva79-19/Agent-Federation` repo'sunu bagla > Build: `npm install` > Start: `npx tsx relay-server.ts` > Plan: Free.
+Detayli rehber: [RENDER-DEPLOY.md](RENDER-DEPLOY.md) | Alternatif: [FLY-DEPLOY.md](FLY-DEPLOY.md) (Fly.io)
+
 ## Yol Haritası
 
 - [ ] **Batch işlemler** — Bir seferde birden fazla agent'a mesaj gönder
