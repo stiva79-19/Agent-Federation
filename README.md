@@ -6,7 +6,7 @@
 
 [![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node.js >=18](https://img.shields.io/badge/Node.js-%3E%3D18-green.svg)](https://nodejs.org)
-[![221 Tests Passing](https://img.shields.io/badge/Tests-221%20Passing-brightgreen.svg)](tests/)
+[![389 Tests Passing](https://img.shields.io/badge/Tests-389%20Passing-brightgreen.svg)](tests/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-Strict%20Mode-blue.svg)](tsconfig.json)
 [![Coverage 77.1%](https://img.shields.io/badge/Coverage-77.1%25-yellowgreen.svg)](tests/)
 
@@ -36,7 +36,7 @@ Agent Federation is a peer-to-peer platform enabling two OpenClaw users to pair 
 - **📊 Risk Scoring** — Every action receives a 0-100 risk score for informed decision-making.
 - **🚫 Network Egress Filtering** — Domain whitelist, private IP blocking, and DNS interception.
 - **👻 OpenClaw Identity Integration** — Loads IDENTITY.md and SOUL.md from workspace.
-- **🌊 Deep Ocean Dashboard** — Dark-themed UI built with Next.js 14, Tailwind CSS, and shadcn/ui.
+- **🌊 Deep Ocean Dashboard** — Dark-themed UI built with vanilla HTML/CSS/JS with glassmorphism design.
 - **📋 Audit Logging** — Every operation logged to JSONL for full transparency.
 - **🆔 DID Identity** — Decentralized identity (did:claw:ownerID:agentName).
 - **⛓️ Subagent Depth Limiting** — Prevents recursive agent spawning (max depth 1).
@@ -100,7 +100,7 @@ npm run dev
 ```
 
 ### 5. Open Dashboard
-Navigate to `http://localhost:3000` in your browser to access the Deep Ocean dashboard.
+Navigate to `http://localhost:18790` in your browser to access the Deep Ocean dashboard.
 
 ## Screenshots
 
@@ -161,12 +161,14 @@ src/
 │   └── websocket.ts
 └── index.ts                 # Public API exports
 
-ui/                          # Next.js 14 Deep Ocean dashboard
-├── app/                     # App routing
-├── components/              # UI components (AgentCard, etc.)
-└── hooks/                   # useAgentFederation hook
+ui/                          # Deep Ocean dashboard (vanilla HTML/CSS/JS)
+├── dashboard.html           # Single-page glassmorphism UI
+├── dashboard.js             # WebSocket client logic
+├── app/                     # Next.js app (legacy)
+├── components/              # React components (legacy)
+└── hooks/                   # useAgentFederation hook (legacy)
 
-tests/                       # 221 tests across 11 files
+tests/                       # 389 tests across 17 files
 └── *.test.ts
 ```
 
@@ -174,8 +176,8 @@ tests/                       # 221 tests across 11 files
 - **TypeScript** (strict mode, ES2022)
 - **Node.js** (≥18)
 - **WebSocket** (ws library for real-time P2P)
-- **Vitest** (221 tests, 77.1% coverage)
-- **Next.js 14** + Tailwind CSS + shadcn/ui (dashboard)
+- **Vitest** (389 tests across 17 files)
+- **Vanilla HTML/CSS/JS** with glassmorphism design (dashboard)
 - **Zero external dependencies** (core library)
 
 ## The 7 Immutable Laws

@@ -205,10 +205,51 @@ export class WebSocketServerManager extends EventEmitter {
   /**
    * UI klasörü yolunu çözümler.
    * Proje kökündeki ui/ dizinini arar.
+   *
+   * Birden fazla stratejiyi dener (ESM ve CJS uyumluluğu için):
+   * 1. process.cwd()/ui — sunucu proje kökünden başlatıldığında (en yaygın)
+   * 2. __dirname tabanlı — TypeScript src/server/ws-server.ts → proje kökü
+   * 3. Derlenmiş dist dosyası için — dist/server/ws-server.js → proje kökü
+   *
+   * dashboard.html içeren ilk dizini döndürür.
    */
   private resolveUiPath(): string {
-    // Proje kökündeki ui/ klasörünü bul
-    return path.resolve(__dirname, '..', '..', 'ui');
+    const candidates: string[] = [];
+
+    // Strategy 1: process.cwd() (en yaygın — npm scripts, tsx, ts-node)
+    candidates.push(path.resolve(process.cwd(), 'ui'));
+
+    // Strategy 2: __dirname tabanlı (CJS veya tsx shim — ESM'de de tsx sağlar)
+    try {
+      if (typeof __dirname === 'string' && __dirname.length > 0) {
+        candidates.push(path.resolve(__dirname, '..', '..', 'ui'));
+      }
+    } catch {
+      // ESM ortamında __dirname ReferenceError atabilir — yoksay
+    }
+
+    // Strategy 3: Test ortamı veya başka bir dizin için — en az 3 üst dizine kadar tara
+    let walkPath = process.cwd();
+    for (let i = 0; i < 3; i++) {
+      const parent = path.dirname(walkPath);
+      if (parent === walkPath) break;
+      walkPath = parent;
+      candidates.push(path.resolve(walkPath, 'ui'));
+    }
+
+    // dashboard.html içeren ilk adayı döndür
+    for (const candidate of candidates) {
+      try {
+        if (fs.existsSync(path.join(candidate, 'dashboard.html'))) {
+          return candidate;
+        }
+      } catch {
+        // ignore, devam et
+      }
+    }
+
+    // Hiçbiri bulunamadı — ilk adayı döndür (fallback HTML tetiklenecek)
+    return candidates[0] ?? path.resolve(process.cwd(), 'ui');
   }
 
   /**

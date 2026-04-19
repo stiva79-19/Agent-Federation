@@ -4,7 +4,7 @@
 
 [![MIT Lisans](https://img.shields.io/badge/Lisans-MIT-green.svg)](LICENSE)
 [![Node.js >=18](https://img.shields.io/badge/Node.js-%3E%3D18-blue.svg)](https://nodejs.org)
-[![221 Test](https://img.shields.io/badge/Test-221-brightgreen.svg)](tests/)
+[![389 Test](https://img.shields.io/badge/Test-389-brightgreen.svg)](tests/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6.svg)](tsconfig.json)
 [![Kapsama %77.1](https://img.shields.io/badge/Kapsama-%2577.1-success.svg)](coverage/)
 
@@ -35,7 +35,7 @@ Agent Federation, iki OpenClaw kullanıcısının agent'larını basit bir davet
 - 🔐 **ECDSA Kimlik Doğrulama** — P-256 elliptik eğri kriptografisi
 - 🌐 **Network Egress Filtreleme** — Domain whitelist, private IP engelleme
 - 🦀 **OpenClaw Entegrasyonu** — IDENTITY.md + SOUL.md tabanlı kimlik yönetimi
-- 📈 **Deep Ocean Dashboard** — Next.js 14 + Tailwind + shadcn/ui arayüzü
+- 📈 **Deep Ocean Dashboard** — Vanilla HTML/CSS/JS, glassmorphism tasarım
 - 📋 **Audit Loglama** — JSONL formatında tam işlem kaydı
 - 🆔 **DID Kimlik Sistemi** — `did:claw:ownerID:agentName` formatında merkezi olmayan kimlikler
 - ⚡ **7 Agent Limiti** — Güvenlik ve performans dengesi
@@ -155,15 +155,15 @@ src/
 ├── transport/      # WebSocket transport katmanı
 └── index.ts        # Kamu API'si
 
-ui/                 # Next.js 14 dashboard (Deep Ocean teması)
-├── pages/          # Sayfa bileşenleri
-├── components/     # React bileşenleri (shadcn/ui)
-├── lib/            # Yardımcı fonksiyonlar
-└── styles/         # Tailwind CSS stilleri
+ui/                 # Deep Ocean dashboard (vanilla HTML/CSS/JS)
+├── dashboard.html  # Tek sayfalık glassmorphism arayüz
+├── dashboard.js    # WebSocket client mantığı
+├── app/            # Next.js app (eski)
+├── components/     # React bileşenleri (eski)
+└── hooks/          # useAgentFederation hook (eski)
 
-tests/              # 221 test, 11 test dosyası
-├── unit/           # Birim testleri
-├── integration/    # İntegrasyon testleri
+tests/              # 389 test, 17 test dosyası
+├── *.test.ts       # Birim + İntegrasyon testleri
 └── e2e/            # Uçtan uca testleri
 ```
 
@@ -209,7 +209,7 @@ npm run test -- src/agent.test.ts
 npm run test:coverage
 ```
 
-221 test, %77.1 kapsamayı hedefler. Vitest kullanılır.
+389 test, 17 test dosyası. Vitest kullanılır.
 
 ### TypeScript Strict Modu
 
