@@ -1,0 +1,24 @@
+{
+  "name": "agent-federation",
+  "version": "0.1.0",
+  "description": "Federated AI Agent Collaboration Platform — Human-gated, sandboxed, secure",
+  "main": "src/index.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest",
+    "lint": "eslint src/"
+  },
+  "dependencies": {
+    "@rollup/rollup-linux-arm64-gnu": "^4.60.2",
+    "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "@types/ws": "^8.18.1",
+    "@vitest/coverage-v8": "^1.6.1",
+    "eslint": "^8.57.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  }
+}
