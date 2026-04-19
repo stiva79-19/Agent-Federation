@@ -1,4 +1,7 @@
 /**
+ * @deprecated Bu modul artik onerilmiyor. Bunun yerine Hyperswarm tabanli
+ * SwarmManager (src/swarm/swarm-manager.ts) kullanin.
+ *
  * Relay Server Module — Agent Federation
  *
  * Fly.io'da calisan merkezi relay sunucusu.
@@ -7,6 +10,8 @@
  *
  * Onemli: Relay sunucusu LLM cagrisi YAPMAZ, API key'leri bilmez.
  * Sadece mesajlari iletir.
+ *
+ * @see src/swarm/swarm-manager.ts — Yeni P2P sistemi
  */
 
 import { WebSocketServer, WebSocket, RawData } from 'ws';

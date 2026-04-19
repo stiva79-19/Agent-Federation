@@ -33,6 +33,8 @@ import { P2PManager } from './p2p';
 import { Agent, loadAgentConfig, loadOpenClawIdentity } from '../agent/agent';
 import type { OpenClawIdentity } from '../agent/agent';
 import type { LLMConfig } from '../agent/llm';
+import type { SwarmManager } from '../swarm/swarm-manager';
+import type { SwarmMessage } from '../swarm/protocol';
 import { SandboxFS } from './sandbox-fs';
 import { ApprovalManager } from './approval';
 import type { ApprovalRequest, ApprovalMode } from './approval';
@@ -66,6 +68,9 @@ export type { InviteCode, P2PMatch } from './p2p';
 export { Agent, loadAgentConfig, loadOpenClawIdentity, buildSystemPrompt } from '../agent/agent';
 export type { OpenClawIdentity } from '../agent/agent';
 export { LLMClient, loadLLMConfig } from '../agent/llm';
+// Swarm exports
+export type { SwarmManager } from '../swarm/swarm-manager';
+export type { SwarmMessage } from '../swarm/protocol';
 
 /**
  * WebSocket server manager.
@@ -112,6 +117,8 @@ export class WebSocketServerManager extends EventEmitter {
   private clientSandboxActionCount: Map<string, number> = new Map();
   /** Aktif sandbox session ID'leri (clientId → sessionId) */
   private clientSandboxSessions: Map<string, string> = new Map();
+  /** Swarm manager (swarm mode'da set edilir) */
+  private swarmManager: SwarmManager | null = null;
 
   constructor(config: ServerConfig & { networkConfig?: NetworkEgressConfig }) {
     super();
@@ -150,6 +157,92 @@ export class WebSocketServerManager extends EventEmitter {
     this.openclawIdentity = loadOpenClawIdentity();
     if (this.openclawIdentity) {
       console.log(`[WS Server] OpenClaw identity loaded: ${this.openclawIdentity.name} ${this.openclawIdentity.emoji}`);
+    }
+  }
+
+  /**
+   * SwarmManager'ı bağlar.
+   * Swarm event'lerini dashboard WebSocket'lere köprüler.
+   */
+  setSwarmManager(manager: SwarmManager): void {
+    this.swarmManager = manager;
+
+    // Swarm event'lerini dashboard client'lara ilet
+    manager.on('peer_connected', (peer) => {
+      this.broadcastToDashboard({
+        type: 'swarm_peer_joined',
+        agentName: peer.agentName,
+        agentDid: peer.agentDid,
+        peerCount: manager.peerCount,
+        maxPeers: manager.maxPeers,
+        sessionInfo: manager.getSessionInfo(),
+      });
+    });
+
+    manager.on('peer_disconnected', (peerId: string, agentName: string) => {
+      this.broadcastToDashboard({
+        type: 'swarm_peer_left',
+        peerId,
+        agentName,
+        peerCount: manager.peerCount,
+        maxPeers: manager.maxPeers,
+        sessionInfo: manager.getSessionInfo(),
+      });
+    });
+
+    manager.on('session_created', (sessionKey: string) => {
+      this.broadcastToDashboard({
+        type: 'swarm_session_created',
+        sessionKey,
+        sessionInfo: manager.getSessionInfo(),
+      });
+    });
+
+    manager.on('session_joined', (sessionKey: string) => {
+      this.broadcastToDashboard({
+        type: 'swarm_session_joined',
+        sessionKey,
+        sessionInfo: manager.getSessionInfo(),
+      });
+    });
+
+    manager.on('session_closed', () => {
+      this.broadcastToDashboard({
+        type: 'swarm_session_closed',
+      });
+    });
+
+    // Swarm'dan gelen mesajları dashboard'a ilet
+    manager.on('message', (_peerId: string, message: SwarmMessage) => {
+      this.broadcastToDashboard({
+        type: 'swarm_message',
+        swarmMessage: message,
+      });
+    });
+
+    manager.on('error', (error: Error) => {
+      this.broadcastToDashboard({
+        type: 'swarm_error',
+        message: error.message,
+      });
+    });
+  }
+
+  /**
+   * SwarmManager instance'ını döner.
+   */
+  getSwarmManager(): SwarmManager | null {
+    return this.swarmManager;
+  }
+
+  /**
+   * Tüm dashboard client'lara mesaj gönderir.
+   */
+  private broadcastToDashboard(data: Record<string, unknown>): void {
+    for (const [, ws] of this.dashboardClients) {
+      if (ws.readyState === WebSocket.OPEN) {
+        this.sendDashboard(ws, data);
+      }
     }
   }
 
@@ -519,7 +612,7 @@ export class WebSocketServerManager extends EventEmitter {
 
     console.log(`[WS Server] Dashboard client connected: ${clientId}`);
 
-    // Client'a hoşgeldin mesajı (OpenClaw kimlik bilgileri + agent sayacı dahil)
+    // Client'a hoşgeldin mesajı (OpenClaw kimlik bilgileri + agent sayacı + swarm bilgisi dahil)
     this.sendDashboard(ws, {
       type: 'welcome',
       clientId,
@@ -533,6 +626,8 @@ export class WebSocketServerManager extends EventEmitter {
         creature: this.openclawIdentity.creature,
         vibe: this.openclawIdentity.vibe,
       } : null,
+      swarmEnabled: this.swarmManager !== null,
+      swarmSessionInfo: this.swarmManager?.getSessionInfo() ?? null,
     });
 
     ws.on('message', (data: RawData) => {
@@ -630,6 +725,22 @@ export class WebSocketServerManager extends EventEmitter {
         break;
       case 'get_agent_statuses':
         this.handleGetAgentStatuses(ws);
+        break;
+      // ─── Swarm Message Handlers ─────────────────────────────────────
+      case 'swarm_create_session':
+        this.handleSwarmCreateSession(clientId, ws);
+        break;
+      case 'swarm_join_session':
+        this.handleSwarmJoinSession(clientId, ws, message);
+        break;
+      case 'swarm_leave_session':
+        this.handleSwarmLeaveSession(clientId, ws);
+        break;
+      case 'swarm_get_session_info':
+        this.handleSwarmGetSessionInfo(ws);
+        break;
+      case 'swarm_broadcast':
+        this.handleSwarmBroadcast(clientId, ws, message);
         break;
       default:
         this.sendDashboard(ws, { type: 'error', message: `Bilinmeyen mesaj tipi: ${msgType}` });
@@ -1017,6 +1128,139 @@ export class WebSocketServerManager extends EventEmitter {
       type: 'session_ended_ack',
       message: 'Oturum sonlandırıldı',
     });
+  }
+
+  // ─── Swarm Handlers ──────────────────────────────────────────────────────
+
+  /**
+   * Dashboard'dan swarm session oluşturma isteği.
+   */
+  private handleSwarmCreateSession(_clientId: string, ws: WebSocket): void {
+    if (!this.swarmManager) {
+      this.sendDashboard(ws, { type: 'error', message: 'Swarm mode aktif degil. Server\'i swarm modunda baslatin.' });
+      return;
+    }
+
+    try {
+      if (this.swarmManager.hasSession) {
+        this.sendDashboard(ws, { type: 'error', message: 'Zaten bir session acik. Once mevcut session\'i kapatin.' });
+        return;
+      }
+
+      const { sessionKey } = this.swarmManager.createSession();
+      this.sendDashboard(ws, {
+        type: 'swarm_session_created',
+        sessionKey,
+        sessionInfo: this.swarmManager.getSessionInfo(),
+      });
+    } catch (error) {
+      this.sendDashboard(ws, {
+        type: 'error',
+        message: error instanceof Error ? error.message : 'Session olusturulamadi',
+      });
+    }
+  }
+
+  /**
+   * Dashboard'dan swarm session'a katılma isteği.
+   */
+  private handleSwarmJoinSession(_clientId: string, ws: WebSocket, message: Record<string, unknown>): void {
+    if (!this.swarmManager) {
+      this.sendDashboard(ws, { type: 'error', message: 'Swarm mode aktif degil.' });
+      return;
+    }
+
+    const sessionKey = message['sessionKey'] as string;
+    if (!sessionKey) {
+      this.sendDashboard(ws, { type: 'error', message: 'Session key gerekli.' });
+      return;
+    }
+
+    try {
+      if (this.swarmManager.hasSession) {
+        this.sendDashboard(ws, { type: 'error', message: 'Zaten bir session acik. Once mevcut session\'i kapatin.' });
+        return;
+      }
+
+      this.swarmManager.joinSession(sessionKey);
+      this.sendDashboard(ws, {
+        type: 'swarm_session_joined',
+        sessionKey,
+        sessionInfo: this.swarmManager.getSessionInfo(),
+      });
+    } catch (error) {
+      this.sendDashboard(ws, {
+        type: 'error',
+        message: error instanceof Error ? error.message : 'Session\'a katilinamadi',
+      });
+    }
+  }
+
+  /**
+   * Dashboard'dan swarm session'dan ayrılma isteği.
+   */
+  private handleSwarmLeaveSession(_clientId: string, ws: WebSocket): void {
+    if (!this.swarmManager) {
+      this.sendDashboard(ws, { type: 'error', message: 'Swarm mode aktif degil.' });
+      return;
+    }
+
+    try {
+      this.swarmManager.leaveSession();
+      this.sendDashboard(ws, { type: 'swarm_session_closed' });
+    } catch (error) {
+      this.sendDashboard(ws, {
+        type: 'error',
+        message: error instanceof Error ? error.message : 'Session kapatilamadi',
+      });
+    }
+  }
+
+  /**
+   * Dashboard'a swarm session bilgisi gönderir.
+   */
+  private handleSwarmGetSessionInfo(ws: WebSocket): void {
+    if (!this.swarmManager) {
+      this.sendDashboard(ws, {
+        type: 'swarm_session_info',
+        swarmEnabled: false,
+        sessionInfo: null,
+      });
+      return;
+    }
+
+    this.sendDashboard(ws, {
+      type: 'swarm_session_info',
+      swarmEnabled: true,
+      sessionInfo: this.swarmManager.getSessionInfo(),
+    });
+  }
+
+  /**
+   * Dashboard'dan swarm broadcast isteği.
+   * Dashboard üzerinden gönderilen mesajları swarm ağına yayar.
+   */
+  private handleSwarmBroadcast(_clientId: string, ws: WebSocket, message: Record<string, unknown>): void {
+    if (!this.swarmManager) {
+      this.sendDashboard(ws, { type: 'error', message: 'Swarm mode aktif degil.' });
+      return;
+    }
+
+    if (!this.swarmManager.hasSession) {
+      this.sendDashboard(ws, { type: 'error', message: 'Aktif session yok.' });
+      return;
+    }
+
+    const swarmMessage = message['swarmMessage'] as Record<string, unknown> | undefined;
+    if (!swarmMessage) {
+      this.sendDashboard(ws, { type: 'error', message: 'swarmMessage gerekli.' });
+      return;
+    }
+
+    this.swarmManager.broadcastPayload(
+      (swarmMessage['type'] as string) || 'agent_message',
+      swarmMessage['payload'] ?? swarmMessage,
+    );
   }
 
   // ─── Sandbox & Approval Handlers ─────────────────────────────────────────

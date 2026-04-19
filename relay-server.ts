@@ -1,5 +1,8 @@
 #!/usr/bin/env tsx
 /**
+ * @deprecated Bu dosya artik onerilmiyor. Bunun yerine Hyperswarm tabanli
+ * swarm mode kullanin: npx tsx start-server.ts (varsayilan swarm mode).
+ *
  * Agent Federation — Relay Server Entry Point
  *
  * Fly.io'da calistirilan minimal relay sunucusu.

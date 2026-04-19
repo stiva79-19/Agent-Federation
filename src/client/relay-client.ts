@@ -1,4 +1,7 @@
 /**
+ * @deprecated Bu modul artik onerilmiyor. Bunun yerine Hyperswarm tabanli
+ * SwarmManager (src/swarm/swarm-manager.ts) kullanin.
+ *
  * Relay Client Module — Agent Federation
  *
  * Kullanicinin uygulamasinda calisan relay client.
@@ -8,6 +11,8 @@
  *
  * Onemli: LLM cagirilari hep local kalir. Bu modul sadece
  * relay sunucusuyla iletisim kurar.
+ *
+ * @see src/swarm/swarm-manager.ts — Yeni P2P sistemi
  */
 
 import { WebSocket } from 'ws';

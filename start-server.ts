@@ -2,44 +2,55 @@
 /**
  * Agent Federation WebSocket Server Starter
  *
- * Iki modda calisir:
+ * Uc modda calisir:
  *
- * 1. HOSTED MODE (varsayilan):
- *    - Local dashboard'u acar (http://localhost:18790)
- *    - Fly.io relay sunucusuna WebSocket ile baglanir
- *    - Davet kodu relay uzerinden olusturulur/katilir
- *    - Mesajlar relay sunucusu uzerinden akar
- *    - LLM cagirilari LOCAL kalir (API key paylasilmaz)
+ * 1. SWARM MODE (varsayilan):
+ *    - Hyperswarm DHT uzerinden torrent-style P2P
+ *    - Merkezi sunucu yok — NAT traversal otomatik
+ *    - Session key (32 byte hex) paylasilir
+ *    - IP adresi paylasmaniza gerek yok!
  *
  * 2. LOCAL MODE (--mode local):
  *    - Eski P2P davranis — dogrudan IP ile baglanti
- *    - Relay sunucusu kullanilmaz
+ *    - Relay/swarm kullanilmaz
+ *
+ * 3. HOSTED MODE (--mode hosted) [DEPRECATED]:
+ *    - Fly.io/Render relay sunucusu uzerinden baglanti
+ *    - Artik swarm mode onerilir
  *
  * Kullanim:
- *   npx tsx start-server.ts                           # Hosted mode (varsayilan)
+ *   npx tsx start-server.ts                           # Swarm mode (varsayilan)
+ *   npx tsx start-server.ts --create-session          # Session olustur, key'i yazdir
+ *   npx tsx start-server.ts --join <session-key>      # Session'a katil
  *   npx tsx start-server.ts --mode local              # Self-hosted P2P mode
- *   npx tsx start-server.ts --relay wss://my-relay.com  # Custom relay sunucusu
+ *   npx tsx start-server.ts --mode hosted             # [DEPRECATED] Relay mode
+ *   npx tsx start-server.ts --relay wss://my-relay.com  # [DEPRECATED] Custom relay
  */
 
 import { WebSocketServerManager, defaultServerConfig } from './src/server/ws-server';
 import { RelayClient, defaultRelayUrl } from './src/client/relay-client';
+import { SwarmManager, defaultSwarmConfig } from './src/swarm/swarm-manager';
 import { loadOpenClawIdentity } from './src/agent/agent';
 import { loadLLMConfig } from './src/agent/llm';
 import { auditLogger } from './src/server/audit-logger';
 
 // ─── CLI Argumanlari Parse ──────────────────────────────────────────────────
 
-type ConnectionMode = 'hosted' | 'local';
+type ConnectionMode = 'swarm' | 'hosted' | 'local';
 
 interface StartupArgs {
   mode: ConnectionMode;
   relayUrl: string;
+  createSession: boolean;
+  joinSessionKey: string | null;
 }
 
 function parseArgs(): StartupArgs {
   const args = process.argv.slice(2);
-  let mode: ConnectionMode = 'hosted';
+  let mode: ConnectionMode = 'swarm';
   let relayUrl = defaultRelayUrl();
+  let createSession = false;
+  let joinSessionKey: string | null = null;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -49,11 +60,20 @@ function parseArgs(): StartupArgs {
         mode = 'local';
       } else if (val === 'hosted' || val === 'relay' || val === 'global') {
         mode = 'hosted';
+      } else if (val === 'swarm' || val === 'torrent' || val === 'dht') {
+        mode = 'swarm';
       }
       i++;
     } else if (arg === '--relay' && args[i + 1]) {
       relayUrl = args[i + 1];
       mode = 'hosted'; // --relay implies hosted mode
+      i++;
+    } else if (arg === '--create-session') {
+      createSession = true;
+      mode = 'swarm';
+    } else if (arg === '--join' && args[i + 1]) {
+      joinSessionKey = args[i + 1];
+      mode = 'swarm';
       i++;
     }
   }
@@ -62,13 +82,17 @@ function parseArgs(): StartupArgs {
   const envMode = process.env['CONNECTION_MODE'];
   if (envMode === 'local' || envMode === 'p2p') {
     mode = 'local';
+  } else if (envMode === 'hosted' || envMode === 'relay') {
+    mode = 'hosted';
+  } else if (envMode === 'swarm' || envMode === 'torrent') {
+    mode = 'swarm';
   }
   const envRelay = process.env['RELAY_URL'];
-  if (envRelay) {
+  if (envRelay && mode === 'hosted') {
     relayUrl = envRelay;
   }
 
-  return { mode, relayUrl };
+  return { mode, relayUrl, createSession, joinSessionKey };
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
@@ -92,14 +116,21 @@ if (envHost) {
 const identity = loadOpenClawIdentity();
 const llmConfig = loadLLMConfig();
 
+const modeLabels: Record<ConnectionMode, string> = {
+  swarm: '🐝 Swarm (DHT P2P)',
+  hosted: '🌐 Hosted (Relay) [DEPRECATED]',
+  local: '🏠 Local (P2P)',
+};
+
 console.log(`🚀 Starting Agent Federation Server...`);
-console.log(`   Mode: ${startupArgs.mode === 'hosted' ? '🌐 Hosted (Relay)' : '🏠 Local (P2P)'}`);
+console.log(`   Mode: ${modeLabels[startupArgs.mode]}`);
 console.log(`   Port: ${config.port}`);
 console.log(`   Host: ${config.host}`);
 console.log(`   SSL: ${config.ssl}`);
 console.log(`   LLM: ${llmConfig.model} (${llmConfig.baseUrl})`);
 if (startupArgs.mode === 'hosted') {
   console.log(`   Relay: ${startupArgs.relayUrl}`);
+  console.warn('   ⚠️  Hosted/relay mode is DEPRECATED. Use swarm mode instead (default).');
 }
 if (identity) {
   console.log(`   Agent: ${identity.name} ${identity.emoji} — ${identity.creature}`);
@@ -111,8 +142,11 @@ if (identity) {
 
 const server = new WebSocketServerManager(config);
 
-// Relay client (hosted mode icin)
+// Relay client (hosted mode icin — deprecated)
 let relayClient: RelayClient | null = null;
+
+// Swarm manager (swarm mode icin)
+let swarmManager: SwarmManager | null = null;
 
 server.start()
   .then(() => {
@@ -121,8 +155,53 @@ server.start()
     console.log(`   Health:    http://localhost:${config.port}/health`);
     console.log(`   WebSocket: ws://localhost:${config.port}/dashboard`);
 
-    if (startupArgs.mode === 'hosted') {
+    if (startupArgs.mode === 'swarm') {
       console.log('');
+      console.log('🐝 Swarm mode — Hyperswarm DHT ile P2P baglanti');
+
+      const swarmConfig = defaultSwarmConfig();
+      if (identity) {
+        swarmConfig.agentName = identity.name;
+        swarmConfig.agentDid = `did:claw:${identity.name.toLowerCase()}`;
+      }
+
+      swarmManager = new SwarmManager(swarmConfig);
+
+      // Swarm event'lerini loglama
+      swarmManager.on('peer_connected', (peer) => {
+        console.log(`   ✅ Peer baglandi: ${peer.agentName} (${peer.agentDid})`);
+      });
+
+      swarmManager.on('peer_disconnected', (peerId: string, agentName: string) => {
+        console.log(`   ❌ Peer ayrildi: ${agentName} [${peerId}]`);
+      });
+
+      swarmManager.on('error', (error: Error) => {
+        console.error(`   ❌ Swarm hatasi: ${error.message}`);
+      });
+
+      // Swarm manager'ı server'a bağla (ws-server bridge)
+      server.setSwarmManager(swarmManager);
+
+      // CLI'dan session oluştur/katıl
+      if (startupArgs.createSession) {
+        const { sessionKey } = swarmManager.createSession();
+        console.log('');
+        console.log('🔑 Session Key (bunu paylasin):');
+        console.log(`   ${sessionKey}`);
+        console.log('');
+        console.log('   Katilmak icin: npx tsx start-server.ts --join ' + sessionKey);
+      } else if (startupArgs.joinSessionKey) {
+        swarmManager.joinSession(startupArgs.joinSessionKey);
+        console.log(`   🔗 Session'a katiliniyor: ${startupArgs.joinSessionKey.slice(0, 16)}...`);
+      } else {
+        console.log('');
+        console.log('   Dashboard\'dan "Session Olustur" veya "Session\'a Katil" butonunu kullanin.');
+        console.log('   Veya CLI: --create-session / --join <key>');
+      }
+    } else if (startupArgs.mode === 'hosted') {
+      console.log('');
+      console.warn('⚠️  DEPRECATED: Hosted/relay mode artik onerilmiyor.');
       console.log('🌐 Hosted mode — Relay sunucusuna baglaniyor...');
 
       relayClient = new RelayClient({
@@ -155,7 +234,11 @@ server.start()
     console.log('   1. Tarayicida http://localhost:' + config.port + ' adresini acin');
     console.log('   2. OpenClaw Gateway calisiyorsa LLM otomatik yapilandirilir');
 
-    if (startupArgs.mode === 'hosted') {
+    if (startupArgs.mode === 'swarm') {
+      console.log('   3. "Session Olustur" ile torrent key alin');
+      console.log('   4. Key\'i paylasın — IP adresi paylasmaniza gerek yok!');
+      console.log('   5. Karsi taraf "Session\'a Katil" ile key\'i girer');
+    } else if (startupArgs.mode === 'hosted') {
       console.log('   3. "Davet Olustur" ile relay uzerinden kod alin');
       console.log('   4. Kodu paylasın — IP adresi paylasmaniza gerek yok!');
     } else {
@@ -171,6 +254,7 @@ server.start()
         host: config.host,
         mode: startupArgs.mode,
         relayUrl: startupArgs.mode === 'hosted' ? startupArgs.relayUrl : null,
+        swarmEnabled: startupArgs.mode === 'swarm',
         openclawIdentity: identity?.name ?? null,
         llmBaseUrl: llmConfig.baseUrl,
         llmModel: llmConfig.model,
@@ -188,6 +272,9 @@ function shutdown(): void {
   console.log('\n🛑 Shutting down...');
   if (relayClient) {
     relayClient.disconnect();
+  }
+  if (swarmManager) {
+    swarmManager.destroy().catch(() => {});
   }
   server.stop();
   process.exit(0);
