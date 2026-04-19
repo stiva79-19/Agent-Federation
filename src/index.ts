@@ -67,5 +67,13 @@ export type { AgentConfig, ConversationMessage, AgentStatus, ConversationEvent, 
 export { LLMClient, loadLLMConfig } from './agent/llm';
 export type { ChatMessage, LLMConfig, TokenUsage } from './agent/llm';
 
+// Relay Server
+export { RelayServer, defaultRelayConfig } from './server/relay';
+export type { RelayConfig, RelayParticipant, RelayRoom, RelayClientMessage, RelayServerMessage } from './server/relay';
+
+// Relay Client
+export { RelayClient, defaultRelayUrl } from './client/relay-client';
+export type { RelayClientConfig, RelayClientState, RelayClientEvents } from './client/relay-client';
+
 // Constants
 export const MAX_AGENTS_PER_GROUP = 7;

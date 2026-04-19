@@ -257,6 +257,19 @@ export class P2PManager {
   }
 
   /**
+   * Aktif bekleyen davet kodlarını döner (debug için).
+   */
+  getActiveCodes(): string[] {
+    const active: string[] = [];
+    for (const [code, invite] of this.inviteCodes.entries()) {
+      if (invite.status === 'waiting' && Date.now() < invite.expiresAt.getTime()) {
+        active.push(code);
+      }
+    }
+    return active;
+  }
+
+  /**
    * İstatistikler.
    */
   getStats(): { activeInvites: number; activeMatches: number } {

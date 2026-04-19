@@ -9,11 +9,16 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
+    "start": "tsx start-server.ts",
+    "start:local": "tsx start-server.ts --mode local",
+    "start:relay": "tsx relay-server.ts",
     "test": "vitest",
-    "lint": "eslint src/"
+    "lint": "eslint src/",
+    "deploy": "fly deploy"
   },
   "dependencies": {
     "@rollup/rollup-linux-arm64-gnu": "^4.60.2",
+    "tsx": "^4.19.2",
     "ws": "^8.16.0"
   },
   "devDependencies": {

@@ -1,0 +1,51 @@
+# fly.toml - Agent Federation Relay Server
+# https://fly.io/docs/reference/configuration/
+#
+# Ilk deploy oncesi: `fly launch --no-deploy --copy-config` ile app adi ve region sec,
+# sonra `fly deploy` ile yayinla.
+
+app = "agent-federation"
+primary_region = "iad"  # Washington DC — ABD + Avrupa icin dengeli latency
+kill_signal = "SIGINT"
+kill_timeout = "10s"
+
+[build]
+  dockerfile = "Dockerfile"
+
+# Ortam degiskenleri (hassas olanlar icin `fly secrets set KEY=value` kullan)
+[env]
+  PORT = "8080"
+  HOST = "0.0.0.0"
+  NODE_ENV = "production"
+  # Relay sunucu modu — sadece mesaj relay, LLM yok, dashboard yok
+  RELAY_MODE = "true"
+  RELAY_MAX_ROOMS = "100"
+  RELAY_ROOM_TTL_HOURS = "24"
+
+# HTTP service: TLS terminasyonu Fly edge'de, iceride plain HTTP + WebSocket
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"    # trafik yoksa makineyi durdur
+  auto_start_machines = true      # istek gelince otomatik baslat
+  min_machines_running = 0        # sifira kadar olcekle (idle iken 0)
+  processes = ["app"]
+
+  # WebSocket baglantIlarini uzun sureli tut
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 250
+    soft_limit = 200
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "15s"
+    method = "GET"
+    path = "/health"
+
+# VM kaynaklari — kucuk basla, gerekirse buyut
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1

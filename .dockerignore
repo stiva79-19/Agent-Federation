@@ -1,0 +1,66 @@
+# Git
+.git
+.github
+.gitignore
+
+# Dependencies (Docker build ayrı install yapacak)
+node_modules
+ui/node_modules
+
+# Build & cache
+dist
+build
+coverage
+.federation-sandbox
+ui/.next
+*.tsbuildinfo
+.next
+
+# Logs
+logs
+*.log
+audit-log.jsonl
+
+# Development artifacts
+.env
+.env.local
+.vscode
+.idea
+.DS_Store
+*.swp
+
+# Tests & demo
+tests
+demo-test.ts
+test-agent.ts
+TEST-REPORT.md
+
+# Docs (image içinde gereksiz)
+docs
+CHANGELOG.md
+CONTRIBUTING.md
+SECURITY.md
+IMPLEMENTATION_SUMMARY.md
+FLY-DEPLOY.md
+
+# Dashboard dışı UI dosyaları (Next.js eski ui kullanılmayacak)
+ui/.eslintrc.json
+ui/.gitignore
+ui/app
+ui/components
+ui/hooks
+ui/lib
+ui/components.json
+ui/next-env.d.ts
+ui/next.config.mjs
+ui/package.json
+ui/package-lock.json
+ui/postcss.config.mjs
+ui/tailwind.config.ts
+ui/tsconfig.json
+ui/README.md
+
+# Docker config'ini docker'a gönderme
+Dockerfile
+.dockerignore
+fly.toml

@@ -675,6 +675,11 @@ export class WebSocketServerManager extends EventEmitter {
       return;
     }
 
+    // Debug log: gelen kod ve mevcut aktif davetler
+    const activeInvites = this.p2pManager.getActiveCodes();
+    const codeHex = Array.from(code).map(c => c.charCodeAt(0).toString(16)).join(' ');
+    console.log(`[P2P] join_invitation received: code="${code}" (len=${code.length}, hex=${codeHex}) | active: [${activeInvites.join(', ')}]`);
+
     try {
       const match = this.p2pManager.joinInvitation(code, clientId, agentName);
 
