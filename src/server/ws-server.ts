@@ -12,6 +12,7 @@ import { WebSocketServer, WebSocket, RawData } from 'ws';
 import { EventEmitter } from 'events';
 import * as crypto from 'crypto';
 import { NetworkEgressFilter, secureConfig } from '../security/network-egress-filter';
+import type { NetworkEgressConfig } from '../security/network-egress-filter';
 import { ConsentManager } from '../consent/consent';
 import { parseDID } from '../identity/agent';
 import type { Permission } from '../identity/agent';
@@ -22,9 +23,8 @@ import type { AuthResponseMessage } from './auth';
 import { handleMessage as processMessage, sendToClient } from './messaging';
 import { ServerConsentHandler } from './server-consent';
 import { InvitationManager } from './invitations';
-import type { Invitation, CreateInvitationParams } from './invitations';
+import type { Invitation } from './invitations';
 import { SessionManager } from './sessions';
-import type { CollaborationSession } from './sessions';
 import { NotificationManager } from './notifications';
 import type {
   ServerConfig,
@@ -67,7 +67,7 @@ export class WebSocketServerManager extends EventEmitter {
   /** Sahiplere bildirim yöneticisi */
   private notificationManager: NotificationManager;
 
-  constructor(config: ServerConfig & { networkConfig?: Record<string, unknown> }) {
+  constructor(config: ServerConfig & { networkConfig?: NetworkEgressConfig }) {
     super();
     this.config = config;
 

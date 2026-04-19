@@ -1,1 +1,1 @@
-{"eventType":"message_blocked","agentDid":"did:claw:test:agent","details":{"reason":"injection_detected"},"severity":"medium","timestamp":"2026-04-19T10:02:34.340Z"}
+{"eventType":"message_blocked","agentDid":"did:claw:test:agent","details":{"reason":"injection_detected"},"severity":"medium","timestamp":"2026-04-19T10:55:33.997Z"}

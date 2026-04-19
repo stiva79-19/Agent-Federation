@@ -113,7 +113,7 @@ export function createFingerprint(_ws: WebSocket, req: Record<string, unknown>):
  * @returns Socket objesi veya undefined
  */
 export function getSocketInfo(ws: WebSocket): Record<string, unknown> | undefined {
-  return (ws as Record<string, unknown>)._socket as Record<string, unknown> | undefined;
+  return (ws as unknown as Record<string, unknown>)._socket as Record<string, unknown> | undefined;
 }
 
 /**
