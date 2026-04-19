@@ -34,7 +34,6 @@ import { Agent, loadAgentConfig, loadOpenClawIdentity } from '../agent/agent';
 import type { OpenClawIdentity } from '../agent/agent';
 import type { LLMConfig } from '../agent/llm';
 import { SandboxFS } from './sandbox-fs';
-import type { SandboxAction } from './sandbox-fs';
 import { ApprovalManager } from './approval';
 import type { ApprovalRequest, ApprovalMode } from './approval';
 import type {
@@ -1099,7 +1098,7 @@ export class WebSocketServerManager extends EventEmitter {
    * Sandbox onay yanıtını işler.
    * İnsan dashboard'dan "Onayla" veya "Reddet" tıkladığında çağrılır.
    */
-  private handleSandboxApprovalResponse(clientId: string, ws: WebSocket, message: Record<string, unknown>): void {
+  private handleSandboxApprovalResponse(_clientId: string, ws: WebSocket, message: Record<string, unknown>): void {
     const actionId = message['action_id'] as string;
     const approved = message['approved'] as boolean;
 
