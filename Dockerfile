@@ -20,7 +20,7 @@ WORKDIR /app
 COPY --chown=app:app package.json package-lock.json* ./
 
 # Production bagimliliklari + tsx (runtime TypeScript executor)
-RUN npm ci --omit=dev --ignore-scripts \
+RUN npm install --omit=dev --ignore-scripts \
  && npm cache clean --force
 
 # Uygulama kaynagi — sadece relay icin gereken dosyalar
