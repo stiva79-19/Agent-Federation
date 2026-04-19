@@ -33,16 +33,28 @@ import { P2PManager } from './p2p';
 import { Agent, loadAgentConfig, loadOpenClawIdentity } from '../agent/agent';
 import type { OpenClawIdentity } from '../agent/agent';
 import type { LLMConfig } from '../agent/llm';
+import { SandboxFS } from './sandbox-fs';
+import type { SandboxAction } from './sandbox-fs';
+import { ApprovalManager } from './approval';
+import type { ApprovalRequest, ApprovalMode } from './approval';
 import type {
   ServerConfig,
   AgentConnection,
   FederatedMessage,
   AuthChallenge,
   ServerEvent,
+  DashboardAgentStatus,
 } from './types';
+import { MAX_CONNECTED_AGENTS } from './types';
 
 // Re-export types for backward compatibility
-export type { ServerConfig, AgentConnection, FederatedMessage, AuthChallenge, ServerEvent };
+export type { ServerConfig, AgentConnection, FederatedMessage, AuthChallenge, ServerEvent, DashboardAgentStatus };
+export { MAX_CONNECTED_AGENTS } from './types';
+// Re-export sandbox & approval
+export { SandboxFS } from './sandbox-fs';
+export type { SandboxAction, SandboxActionType, SandboxFileInfo } from './sandbox-fs';
+export { ApprovalManager } from './approval';
+export type { ApprovalRequest, ApprovalMode } from './approval';
 // Re-export new modules
 export { InvitationManager } from './invitations';
 export type { Invitation, InvitationStatus, CreateInvitationParams } from './invitations';
@@ -89,6 +101,18 @@ export class WebSocketServerManager extends EventEmitter {
   private activeConversations: Map<string, { running: boolean }> = new Map();
   /** OpenClaw kimlik bilgileri (sunucu başlangıcında yüklenir) */
   private openclawIdentity: OpenClawIdentity | null = null;
+  /** Sandbox dosya sistemi yöneticisi */
+  private sandboxFS: SandboxFS;
+  /** Onay kuyruğu yöneticisi */
+  private approvalManager: ApprovalManager;
+  /** Dashboard client bağlantı zamanları (clientId → connectedAt) */
+  private clientConnectedAt: Map<string, Date> = new Map();
+  /** Dashboard client son mesaj zamanları (clientId → lastMessageAt) */
+  private clientLastMessageAt: Map<string, Date> = new Map();
+  /** Dashboard client sandbox action sayıları (clientId → count) */
+  private clientSandboxActionCount: Map<string, number> = new Map();
+  /** Aktif sandbox session ID'leri (clientId → sessionId) */
+  private clientSandboxSessions: Map<string, string> = new Map();
 
   constructor(config: ServerConfig & { networkConfig?: NetworkEgressConfig }) {
     super();
@@ -115,6 +139,13 @@ export class WebSocketServerManager extends EventEmitter {
     this.sessionManager.onSessionEnd((session) => {
       this.notificationManager.notifySessionEnded(session);
     });
+
+    // Initialize sandbox file system
+    const sandboxBaseDir = path.resolve(process.cwd(), '.federation-sandbox');
+    this.sandboxFS = new SandboxFS({ baseDir: sandboxBaseDir });
+
+    // Initialize approval manager
+    this.approvalManager = new ApprovalManager();
 
     // OpenClaw workspace'den agent kimliğini yükle
     this.openclawIdentity = loadOpenClawIdentity();
@@ -424,8 +455,22 @@ export class WebSocketServerManager extends EventEmitter {
    * P2P davet kodu, agent mesajları ve konuşma kontrolü bu kanaldan yapılır.
    */
   private handleDashboardConnection(ws: WebSocket): void {
+    // Max agent limiti kontrolü
+    if (this.dashboardClients.size >= MAX_CONNECTED_AGENTS) {
+      ws.send(JSON.stringify({
+        type: 'error',
+        code: 'MAX_AGENTS_REACHED',
+        message: 'Maximum 7 agents can be connected simultaneously',
+      }));
+      ws.close(4007, 'Maximum agents reached');
+      return;
+    }
+
     const clientId = crypto.randomUUID();
     this.dashboardClients.set(clientId, ws);
+    this.clientConnectedAt.set(clientId, new Date());
+    this.clientLastMessageAt.set(clientId, new Date());
+    this.clientSandboxActionCount.set(clientId, 0);
 
     // Varsayılan agent oluştur
     const agentConfig = loadAgentConfig();
@@ -434,12 +479,14 @@ export class WebSocketServerManager extends EventEmitter {
 
     console.log(`[WS Server] Dashboard client connected: ${clientId}`);
 
-    // Client'a hoşgeldin mesajı (OpenClaw kimlik bilgileri dahil)
+    // Client'a hoşgeldin mesajı (OpenClaw kimlik bilgileri + agent sayacı dahil)
     this.sendDashboard(ws, {
       type: 'welcome',
       clientId,
       agentName: agent.name,
       agentSystemPrompt: agent.systemPrompt,
+      connectedAgents: this.dashboardClients.size,
+      maxAgents: MAX_CONNECTED_AGENTS,
       openclawIdentity: this.openclawIdentity ? {
         name: this.openclawIdentity.name,
         emoji: this.openclawIdentity.emoji,
@@ -481,6 +528,19 @@ export class WebSocketServerManager extends EventEmitter {
 
       this.dashboardClients.delete(clientId);
       this.clientAgents.delete(clientId);
+      this.clientConnectedAt.delete(clientId);
+      this.clientLastMessageAt.delete(clientId);
+      this.clientSandboxActionCount.delete(clientId);
+
+      // Sandbox session temizle
+      const sandboxSessionId = this.clientSandboxSessions.get(clientId);
+      if (sandboxSessionId) {
+        this.approvalManager.cleanupSession(sandboxSessionId);
+        this.clientSandboxSessions.delete(clientId);
+      }
+
+      // Bağlı agent sayısını güncelle — diğer dashboard client'lara bildir
+      this.broadcastAgentCount();
     });
 
     ws.on('error', (error) => {
@@ -516,9 +576,27 @@ export class WebSocketServerManager extends EventEmitter {
       case 'end_session':
         this.handleEndSession(clientId, ws);
         break;
+      case 'sandbox_action':
+        this.handleSandboxAction(clientId, ws, message);
+        break;
+      case 'sandbox_approval_response':
+        this.handleSandboxApprovalResponse(clientId, ws, message);
+        break;
+      case 'set_approval_mode':
+        this.handleSetApprovalMode(clientId, ws, message);
+        break;
+      case 'get_sandbox_files':
+        this.handleGetSandboxFiles(clientId, ws, message);
+        break;
+      case 'get_agent_statuses':
+        this.handleGetAgentStatuses(ws);
+        break;
       default:
         this.sendDashboard(ws, { type: 'error', message: `Bilinmeyen mesaj tipi: ${msgType}` });
     }
+
+    // Son mesaj zamanını güncelle
+    this.clientLastMessageAt.set(clientId, new Date());
   }
 
   /**
@@ -896,6 +974,396 @@ export class WebSocketServerManager extends EventEmitter {
     });
   }
 
+  // ─── Sandbox & Approval Handlers ─────────────────────────────────────────
+
+  /**
+   * Sandbox dosya işlemi isteğini işler.
+   * Agent bir dosya oluşturma/düzenleme/silme vb. isteği gönderdiğinde çağrılır.
+   */
+  private handleSandboxAction(clientId: string, ws: WebSocket, message: Record<string, unknown>): void {
+    const agent = this.clientAgents.get(clientId);
+    if (!agent) {
+      this.sendDashboard(ws, { type: 'error', message: 'Agent bulunamadı' });
+      return;
+    }
+
+    const action = message['action'] as string;
+    const filePath = message['path'] as string;
+    const content = message['content'] as string | undefined;
+    const oldContent = message['old_content'] as string | undefined;
+    const newContent = message['new_content'] as string | undefined;
+    const fullContent = message['full_content'] as string | undefined;
+
+    if (!action) {
+      this.sendDashboard(ws, { type: 'error', message: 'sandbox_action: action gerekli' });
+      return;
+    }
+
+    // Session sandbox'ını oluştur (yoksa)
+    let sandboxSessionId = this.clientSandboxSessions.get(clientId);
+    if (!sandboxSessionId) {
+      sandboxSessionId = crypto.randomUUID();
+      this.clientSandboxSessions.set(clientId, sandboxSessionId);
+      this.sandboxFS.initSession(sandboxSessionId);
+    }
+
+    // Edit payload oluştur
+    let editPayload: { oldContent: string; newContent: string } | { fullContent: string } | undefined;
+    if (action === 'file_edit') {
+      if (fullContent !== undefined) {
+        editPayload = { fullContent };
+      } else if (oldContent !== undefined && newContent !== undefined) {
+        editPayload = { oldContent, newContent };
+      }
+    }
+
+    // Onay isteği oluştur
+    const [approvalRequest, needsHumanApproval] = this.approvalManager.createRequest(
+      sandboxSessionId,
+      agent.name,
+      action as 'file_create' | 'file_edit' | 'file_delete' | 'file_read' | 'file_list' | 'dir_create',
+      filePath || '.',
+      content,
+      oldContent,
+      editPayload,
+    );
+
+    if (!needsHumanApproval) {
+      // Otomatik onay — hemen uygula
+      const result = this.executeSandboxAction(sandboxSessionId, agent.name, approvalRequest);
+      this.sendDashboard(ws, {
+        type: 'sandbox_action_result',
+        action_id: approvalRequest.id,
+        success: result.success,
+        data: result.data,
+        error: result.error,
+      });
+
+      // İşlem logunu tüm dashboard client'lara bildir
+      this.broadcastSandboxLog(sandboxSessionId, approvalRequest, result.success);
+    } else {
+      // İnsan onayı gerekiyor — P2P eşleşmedeki karşı tarafa (ve kendisine) bildirim gönder
+      const peerId = this.p2pManager.getPeerId(clientId);
+      const approvalMsg = {
+        type: 'sandbox_approval_request',
+        action_id: approvalRequest.id,
+        agent: agent.name,
+        action: approvalRequest.action,
+        path: approvalRequest.filePath,
+        content: approvalRequest.content,
+        old_content: approvalRequest.oldContent,
+        risk_score: approvalRequest.riskScore,
+        preview: this.generatePreview(approvalRequest),
+      };
+
+      // Her iki tarafa da gönder
+      this.sendDashboard(ws, approvalMsg);
+      if (peerId) {
+        const peerWs = this.dashboardClients.get(peerId);
+        if (peerWs && peerWs.readyState === WebSocket.OPEN) {
+          this.sendDashboard(peerWs, approvalMsg);
+        }
+      }
+
+      // Async: onay bekle ve sonucu ilet
+      this.approvalManager.waitForApproval(approvalRequest.id).then((approved) => {
+        if (approved) {
+          const result = this.executeSandboxAction(sandboxSessionId, agent.name, approvalRequest);
+          this.sendDashboard(ws, {
+            type: 'sandbox_action_result',
+            action_id: approvalRequest.id,
+            success: result.success,
+            data: result.data,
+            error: result.error,
+          });
+          this.broadcastSandboxLog(sandboxSessionId, approvalRequest, result.success);
+        } else {
+          this.sendDashboard(ws, {
+            type: 'sandbox_action_result',
+            action_id: approvalRequest.id,
+            success: false,
+            error: 'Action rejected by human operator',
+          });
+        }
+      }).catch(() => {
+        // Ignore — timeout veya cleanup
+      });
+    }
+
+    // Sandbox action count güncelle
+    const count = (this.clientSandboxActionCount.get(clientId) ?? 0) + 1;
+    this.clientSandboxActionCount.set(clientId, count);
+  }
+
+  /**
+   * Sandbox onay yanıtını işler.
+   * İnsan dashboard'dan "Onayla" veya "Reddet" tıkladığında çağrılır.
+   */
+  private handleSandboxApprovalResponse(clientId: string, ws: WebSocket, message: Record<string, unknown>): void {
+    const actionId = message['action_id'] as string;
+    const approved = message['approved'] as boolean;
+
+    if (!actionId || typeof approved !== 'boolean') {
+      this.sendDashboard(ws, { type: 'error', message: 'action_id ve approved gerekli' });
+      return;
+    }
+
+    try {
+      const request = this.approvalManager.resolveRequest(actionId, approved, 'human');
+
+      // Sonucu tüm dashboard client'lara bildir
+      const resultMsg = {
+        type: 'sandbox_approval_resolved',
+        action_id: actionId,
+        approved,
+        agent: request.agentName,
+        action: request.action,
+        path: request.filePath,
+      };
+
+      for (const [, clientWs] of this.dashboardClients) {
+        if (clientWs.readyState === WebSocket.OPEN) {
+          this.sendDashboard(clientWs, resultMsg);
+        }
+      }
+    } catch (err) {
+      this.sendDashboard(ws, {
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Onay işlemi başarısız',
+      });
+    }
+  }
+
+  /**
+   * Onay modunu değiştirir (manual ↔ allow_all).
+   */
+  private handleSetApprovalMode(clientId: string, ws: WebSocket, message: Record<string, unknown>): void {
+    const mode = message['mode'] as string;
+    if (mode !== 'manual' && mode !== 'allow_all') {
+      this.sendDashboard(ws, { type: 'error', message: 'Geçersiz mod. "manual" veya "allow_all" olmalı.' });
+      return;
+    }
+
+    const sandboxSessionId = this.clientSandboxSessions.get(clientId);
+    if (sandboxSessionId) {
+      this.approvalManager.setMode(sandboxSessionId, mode as ApprovalMode);
+    }
+
+    // Tüm dashboard client'lara bildir
+    for (const [, clientWs] of this.dashboardClients) {
+      if (clientWs.readyState === WebSocket.OPEN) {
+        this.sendDashboard(clientWs, {
+          type: 'approval_mode_changed',
+          mode,
+        });
+      }
+    }
+  }
+
+  /**
+   * Sandbox dosya listesi isteğini işler.
+   */
+  private handleGetSandboxFiles(clientId: string, ws: WebSocket, message: Record<string, unknown>): void {
+    const agent = this.clientAgents.get(clientId);
+    if (!agent) {
+      this.sendDashboard(ws, { type: 'error', message: 'Agent bulunamadı' });
+      return;
+    }
+
+    const sandboxSessionId = this.clientSandboxSessions.get(clientId);
+    if (!sandboxSessionId) {
+      this.sendDashboard(ws, { type: 'sandbox_files', files: [], logs: [] });
+      return;
+    }
+
+    const dirPath = (message['path'] as string) || '';
+    const result = this.sandboxFS.fileList(sandboxSessionId, agent.name, dirPath);
+    const logs = this.sandboxFS.getActionLog(sandboxSessionId);
+
+    this.sendDashboard(ws, {
+      type: 'sandbox_files',
+      files: result.files ?? [],
+      logs: logs.map(l => ({
+        id: l.id,
+        agentName: l.agentName,
+        action: l.action,
+        filePath: l.filePath,
+        timestamp: l.timestamp.toISOString(),
+        success: l.success,
+        approvalStatus: l.approvalStatus,
+        error: l.error,
+      })),
+    });
+  }
+
+  /**
+   * Tüm bağlı agent'ların durumunu döner.
+   */
+  private handleGetAgentStatuses(ws: WebSocket): void {
+    const statuses: DashboardAgentStatus[] = [];
+
+    for (const [cId, cWs] of this.dashboardClients) {
+      const agent = this.clientAgents.get(cId);
+      statuses.push({
+        clientId: cId,
+        agentName: agent?.name ?? 'Unknown',
+        online: cWs.readyState === WebSocket.OPEN,
+        connectedAt: this.clientConnectedAt.get(cId) ?? new Date(),
+        lastMessageAt: this.clientLastMessageAt.get(cId) ?? new Date(),
+        sandboxActionCount: this.clientSandboxActionCount.get(cId) ?? 0,
+      });
+    }
+
+    this.sendDashboard(ws, {
+      type: 'agent_statuses',
+      agents: statuses.map(s => ({
+        ...s,
+        connectedAt: s.connectedAt.toISOString(),
+        lastMessageAt: s.lastMessageAt.toISOString(),
+      })),
+      connectedCount: this.dashboardClients.size,
+      maxAgents: MAX_CONNECTED_AGENTS,
+    });
+  }
+
+  /**
+   * Sandbox işlemini gerçekten uygular.
+   */
+  private executeSandboxAction(
+    sessionId: string,
+    agentName: string,
+    request: ApprovalRequest
+  ): { success: boolean; data?: Record<string, unknown>; error?: string } {
+    switch (request.action) {
+      case 'file_create':
+        {
+          const result = this.sandboxFS.fileCreate(sessionId, agentName, request.filePath, request.content ?? '');
+          return { success: result.success, error: result.error };
+        }
+      case 'file_edit':
+        {
+          if (request.editPayload) {
+            const result = this.sandboxFS.fileEdit(sessionId, agentName, request.filePath, request.editPayload);
+            return { success: result.success, error: result.error };
+          }
+          return { success: false, error: 'Edit payload missing' };
+        }
+      case 'file_delete':
+        {
+          const result = this.sandboxFS.fileDelete(sessionId, agentName, request.filePath);
+          return { success: result.success, error: result.error };
+        }
+      case 'file_read':
+        {
+          const result = this.sandboxFS.fileRead(sessionId, agentName, request.filePath);
+          return {
+            success: result.success,
+            data: result.fileContent !== undefined ? { content: result.fileContent } : undefined,
+            error: result.error,
+          };
+        }
+      case 'file_list':
+        {
+          const result = this.sandboxFS.fileList(sessionId, agentName, request.filePath);
+          return {
+            success: result.success,
+            data: result.files ? { files: result.files } : undefined,
+            error: result.error,
+          };
+        }
+      case 'dir_create':
+        {
+          const result = this.sandboxFS.dirCreate(sessionId, agentName, request.filePath);
+          return { success: result.success, error: result.error };
+        }
+      default:
+        return { success: false, error: `Unknown action: ${request.action}` };
+    }
+  }
+
+  /**
+   * Sandbox işlem logunu tüm ilgili dashboard client'lara bildirir.
+   */
+  private broadcastSandboxLog(sessionId: string, request: ApprovalRequest, success: boolean): void {
+    const logMsg = {
+      type: 'sandbox_log_entry',
+      sessionId,
+      action_id: request.id,
+      agent: request.agentName,
+      action: request.action,
+      path: request.filePath,
+      success,
+      risk_score: request.riskScore,
+      approval_status: request.status,
+      timestamp: new Date().toISOString(),
+    };
+
+    for (const [, ws] of this.dashboardClients) {
+      if (ws.readyState === WebSocket.OPEN) {
+        this.sendDashboard(ws, logMsg);
+      }
+    }
+  }
+
+  /**
+   * Bağlı agent sayısını tüm dashboard client'lara bildirir.
+   */
+  private broadcastAgentCount(): void {
+    const msg = {
+      type: 'agent_count_updated',
+      connectedAgents: this.dashboardClients.size,
+      maxAgents: MAX_CONNECTED_AGENTS,
+    };
+    for (const [, ws] of this.dashboardClients) {
+      if (ws.readyState === WebSocket.OPEN) {
+        this.sendDashboard(ws, msg);
+      }
+    }
+  }
+
+  /**
+   * Onay kartı için değişiklik önizlemesi üretir.
+   */
+  private generatePreview(request: ApprovalRequest): string {
+    if (request.action === 'file_delete') {
+      return `Dosya silinecek: ${request.filePath}`;
+    }
+    if (request.action === 'dir_create') {
+      return `Klasör oluşturulacak: ${request.filePath}`;
+    }
+    if (request.content) {
+      const lines = request.content.split('\n');
+      if (lines.length > 10) {
+        return lines.slice(0, 10).join('\n') + `\n... (+${lines.length - 10} satır)`;
+      }
+      return request.content;
+    }
+    return '';
+  }
+
+  // ─── Getters for new modules ───────────────────────────────────────────────
+
+  /**
+   * SandboxFS instance'ını döner.
+   */
+  getSandboxFS(): SandboxFS {
+    return this.sandboxFS;
+  }
+
+  /**
+   * ApprovalManager instance'ını döner.
+   */
+  getApprovalManager(): ApprovalManager {
+    return this.approvalManager;
+  }
+
+  /**
+   * Bağlı dashboard client sayısını döner.
+   */
+  getDashboardClientCount(): number {
+    return this.dashboardClients.size;
+  }
+
   /**
    * Dashboard client'a JSON mesaj gönderir.
    */
@@ -926,11 +1394,22 @@ export class WebSocketServerManager extends EventEmitter {
     for (const [id, ws] of this.dashboardClients.entries()) {
       const conv = this.activeConversations.get(id);
       if (conv) conv.running = false;
+
+      // Sandbox session temizle
+      const sandboxSessionId = this.clientSandboxSessions.get(id);
+      if (sandboxSessionId) {
+        this.approvalManager.cleanupSession(sandboxSessionId);
+      }
+
       ws.close(1000, 'Server shutting down');
     }
     this.dashboardClients.clear();
     this.clientAgents.clear();
     this.activeConversations.clear();
+    this.clientConnectedAt.clear();
+    this.clientLastMessageAt.clear();
+    this.clientSandboxActionCount.clear();
+    this.clientSandboxSessions.clear();
 
     if (this.wss) {
       this.wss.close(() => {

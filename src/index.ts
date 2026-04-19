@@ -30,9 +30,20 @@ export { Transport, defaultTransportConfig } from './transport/websocket';
 export type { TransportConfig, PeerConnection, FederatedMessage, TransportEvent } from './transport/websocket';
 
 // Server
-export { WebSocketServerManager } from './server/ws-server';
+export { WebSocketServerManager, MAX_CONNECTED_AGENTS } from './server/ws-server';
 export { auditLogger, AuditLogger } from './server/audit-logger';
 export type { AuditLogEntry, AuditEventType, AuditSeverity } from './server/audit-logger';
+
+// Sandbox File System
+export { SandboxFS, validateSandboxPath, calculateRiskScore } from './server/sandbox-fs';
+export type { SandboxAction, SandboxActionType, SandboxFileInfo, SandboxFSConfig } from './server/sandbox-fs';
+
+// Approval System
+export { ApprovalManager } from './server/approval';
+export type { ApprovalRequest, ApprovalMode, ApprovalRequestStatus } from './server/approval';
+
+// Types — new additions
+export type { DashboardAgentStatus } from './server/types';
 
 // Invitations & Sessions
 export { InvitationManager } from './server/invitations';

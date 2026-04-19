@@ -102,4 +102,29 @@ export type ServerEvent =
   | 'message'
   | 'message_routed'
   | 'error'
-  | 'heartbeat';
+  | 'heartbeat'
+  | 'sandbox_action'
+  | 'sandbox_approval';
+
+/**
+ * Maksimum eşzamanlı bağlı dashboard client (agent) sayısı.
+ */
+export const MAX_CONNECTED_AGENTS = 7;
+
+/**
+ * Dashboard client durumu.
+ */
+export interface DashboardAgentStatus {
+  /** Client ID */
+  clientId: string;
+  /** Agent adı */
+  agentName: string;
+  /** Online mi */
+  online: boolean;
+  /** Bağlantı zamanı */
+  connectedAt: Date;
+  /** Son mesaj zamanı */
+  lastMessageAt: Date;
+  /** Sandbox işlem sayısı */
+  sandboxActionCount: number;
+}
