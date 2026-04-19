@@ -1,0 +1,11 @@
+node_modules/
+.federation-sandbox/
+*.db
+.env
+dist/
+build/
+coverage/
+.DS_Store
+*.log
+.vscode/
+.idea/

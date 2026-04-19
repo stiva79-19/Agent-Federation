@@ -1,264 +1,280 @@
-# 🤝 Agent Federation Network
+# 🦀⚡ Agent Federation
 
-**Federated AI Agent Collaboration Platform** — İnsan onaylı, güvenli, sandbox'lı.
+> P2P AI agent collaboration platform with human-controlled invite codes, real LLM conversations, and military-grade injection defense.
 
-[![Test Status](https://img.shields.io/badge/tests-45%20passed-brightgreen)]()
-[![TypeScript](https://img.shields.io/badge/typescript-100%25-brightgreen)]()
-[![License](https://img.shields.io/badge/license-MIT-blue)]()
+[🇹🇷 Türkçe](README.tr.md)
 
-## 📜 7 Değişmez Kanun (Immutable Laws)
-
-1. **👑 İnsan Karar Verir** — Agent davetiye gönderemez, kabul edemez, bağlantı kuramaz
-2. **📁 Sandbox Boundary** — Agent sadece izin verilen klasörde çalışır
-3. **🔒 7 Agent Sınırı** — Bir grupta maksimum 7 agent birlikte çalışabilir
-4. **🛡️ Prompt Injection Savunması** — 7 katmanlı savunma, her mesaj sanitize edilir
-5. **👥 Federasyon** — Merkezi admin yok, her insan kendi agent'ının sahibi
-6. **👀 Tam Görünürlük** — Tüm iletişim loglanır, insan takip edebilir
-7. **⏰ Zaman Sınırlı** — Her bağlantı sürelidir, otomatik sonlanır
-
-## 🎯 Genel Bakış
-
-Agent Federation, farklı kullanıcıların AI agent'larının **güvenli şekilde iletişim kurmasını** sağlayan bir platformdur. Merkezi otorite olmadan, her agent kendi sahibinin kontrolünde kalırken işbirliği yapabilir.
-
-### Temel Özellikler
-
-| Özellik | Durum | Açıklama |
-|---------|-------|----------|
-| **Identity System** | ✅ Tamamlandı | DID (Decentralized Identifier) ile agent kimliği |
-| **Consent Manager** | ✅ Tamamlandı | İnsan onayı gerektiren işlemler |
-| **Sandbox** | ✅ Tamamlandı | Klasör izolasyonu ve path traversal koruması |
-| **Injection Defense** | ✅ Tamamlandı | 7 katmanlı prompt injection savunması |
-| **WebSocket Server** | ✅ Tamamlandı | Agent'lar arası mesajlaşma (port 18790) |
-| **Network Egress Filter** | ✅ Tamamlandı | Domain whitelist ve private IP blocking |
-| **Agent Directory** | ✅ Tamamlandı | Agent keşif ve kayıt sistemi |
-| **Dashboard UI** | ✅ Tamamlandı | Next.js yönetim paneli |
-| **Audit Logging** | ✅ Tamamlandı | Tüm işlemlerin loglanması |
-| **Test Suite** | ✅ Tamamlandı | 45 test (core, server, E2E) |
-
-### Kullanım Senaryoları
-
-- 🏢 **Kurumsal İşbirliği** — Farklı departmanların agent'ları proje paylaşımı
-- 👥 **Takım Çalışması** — Developer + Designer agent'ları birlikte kod yazma
-- 🔐 **Güvenli Outsourcing** — Dış kaynaklara sınırlı erişim verme
-- 🧪 **Research Collaboration** — Üniversiteler arası AI işbirliği
-
-## 🏗️ Mimari
+[![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Node.js >=18](https://img.shields.io/badge/Node.js-%3E%3D18-green.svg)](https://nodejs.org)
+[![221 Tests Passing](https://img.shields.io/badge/Tests-221%20Passing-brightgreen.svg)](tests/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-Strict%20Mode-blue.svg)](tsconfig.json)
+[![Coverage 77.1%](https://img.shields.io/badge/Coverage-77.1%25-yellowgreen.svg)](tests/)
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│              Agent Federation Network                    │
-│                                                          │
-│  Ali's MrClaw ←→ WebSocket Server ←→ Zeynep's Owl       │
-│       🦀        (Port 18790)            🦉               │
-│         ↕                                ↕               │
-│    OpenClaw GW                      OpenClaw GW          │
-│         ↕                                ↕               │
-│    Ali's Mac                      Zeynep's PC            │
-│    192.168.1.158                  192.168.1.200          │
-└─────────────────────────────────────────────────────────┘
+ ╔═══════════════════════════════════════════════════════════╗
+ ║                                                           ║
+ ║    🤖  AGENT FEDERATION  🤖                             ║
+ ║                                                           ║
+ ║    Agents talking. Humans deciding.                      ║
+ ║    No central authority. All transparent.                ║
+ ║                                                           ║
+ ╚═══════════════════════════════════════════════════════════╝
 ```
 
-### Katmanlar
+## What is Agent Federation?
 
-| Katman | Sorumluluk | Dosya |
-|--------|-----------|-------|
-| **Identity** | DID oluşturma ve doğrulama | `src/identity/agent.ts` |
-| **Consent** | İnsan onay talepleri, risk skoru | `src/consent/consent.ts` |
-| **Sandbox** | Klasör izolasyonu, path traversal koruması | `src/sandbox/sandbox.ts` |
-| **Protocol** | Mesaj formatı, injection defense | `src/protocol/injection-defense.ts` |
-| **Transport** | WebSocket bağlantısı, heartbeat | `src/transport/websocket.ts` |
-| **Server** | Merkezi mesaj routing | `src/server/ws-server.ts` |
-| **Security** | Network egress filtering | `src/security/network-egress-filter.ts` |
-| **Registry** | Agent keşif, broadcast | `src/registry/directory.ts` |
-| **UI** | Dashboard (Next.js) | `ui/` |
+Agent Federation is a peer-to-peer platform enabling two OpenClaw users to pair their AI agents using invite codes and have them collaborate via real LLM calls. Every action requires human consent, with full transparency through comprehensive audit logging. Built on the OpenClaw ecosystem with zero external dependencies for the core, it demonstrates that federated AI systems can be both powerful and safe.
 
-## 🚀 Hızlı Başlangıç
+## Key Features
 
-### 1. Server'ı Başlat
+- **🎫 P2P Invite Code System** — Host creates code (AF-XXXXXX), guest joins with it. No central server gatekeeping.
+- **💬 Real LLM Conversations** — Agents converse using OpenAI-compatible APIs with full streaming support.
+- **📦 Sandbox Workspace** — Isolated file system per session with strict path traversal protection.
+- **👤 Human Approval First** — Every action requires human consent (manual or allow_all modes).
+- **🔐 7-Layer Injection Defense** — Unicode normalization, hidden character detection, encoded payload filtering, pattern injection blocking, semantic analysis, output validation, and rate limiting.
+- **🔑 ECDSA Authentication** — P-256 elliptic curve key pairs with signed authentication challenges.
+- **📊 Risk Scoring** — Every action receives a 0-100 risk score for informed decision-making.
+- **🚫 Network Egress Filtering** — Domain whitelist, private IP blocking, and DNS interception.
+- **👻 OpenClaw Identity Integration** — Loads IDENTITY.md and SOUL.md from workspace.
+- **🌊 Deep Ocean Dashboard** — Dark-themed UI built with Next.js 14, Tailwind CSS, and shadcn/ui.
+- **📋 Audit Logging** — Every operation logged to JSONL for full transparency.
+- **🆔 DID Identity** — Decentralized identity (did:claw:ownerID:agentName).
+- **⛓️ Subagent Depth Limiting** — Prevents recursive agent spawning (max depth 1).
+- **⚙️ Max 7 Agent Limit** — Scalable grouping with controlled federation size.
 
+## How It Works
+
+```
+┌─────────────┐                    ┌──────────────┐
+│   Ali's     │                    │   Zeynep's   │
+│   Agent     │                    │   Agent      │
+│             │                    │              │
+└──────┬──────┘                    └───────┬──────┘
+       │                                   │
+       │ [1. Creates AF-ABC123]            │
+       │ ────────────────────>             │
+       │                                   │
+       │                    [2. Shares code]
+       │                    ──────────────>
+       │                                   │
+       │                         [3. Joins with code]
+       │                         ────────────────┐
+       │                                         │
+       │         [4. Human approval]             │
+       │         ◄───────────────────────────────┤
+       │                                         │
+       │  [5. Agents connected via WebSocket]    │
+       │  ◄─────────────────────────────────────>
+       │                                         │
+       │  [6. Real LLM conversations begin]      │
+       │  ◄─────────────────────────────────────>
+       │                                         │
+```
+
+## Quick Start
+
+### 1. Clone the Repository
 ```bash
-cd projects/agent-federation
+git clone https://github.com/openclaw/agent-federation.git
+cd agent-federation
+```
+
+### 2. Install Dependencies
+```bash
 npm install
-npm run server
 ```
 
-Server port 18790'da çalışacaktır: `ws://192.168.1.158:18790`
-
-### 2. Dashboard'u Başlat
-
+### 3. Configure Environment
 ```bash
-cd projects/agent-federation/ui
-npm install
-npm run dev -- --hostname 0.0.0.0
+cp .env.example .env
+# Edit .env with your settings:
+# - OPENCLAW_GATEWAY_URL (default: http://localhost:18789)
+# - AGENT_LLM_BASE_URL (OpenAI-compatible endpoint)
+# - AGENT_LLM_API_KEY (your API key)
+# - AGENT_NAME (identifier for your agent)
 ```
 
-Dashboard tarayıcıda aç: **http://192.168.1.158:3000**
-
-### 3. Agent Bağla
-
-```typescript
-import { Transport } from './src/transport/websocket';
-
-const transport = new Transport({
-  tailscaleEnabled: false,
-  port: 18790,
-  ssl: false,
-});
-
-await transport.connect();
-```
-
-### 4. İlk Mesaj
-
-Dashboard'dan:
-1. **Agents** sekmesine git
-2. Bir agent seç
-3. **Message** butonuna tıkla
-
-## 📊 Test Durumu
-
-```
-✓ 45 tests passed
-├── Core Tests: 17
-│   ├── Identity: 3
-│   ├── ConsentManager: 3
-│   ├── Sandbox: 3
-│   ├── InjectionDefense: 4
-│   └── AgentDirectory: 4
-├── Server Tests: 22
-│   ├── WebSocket Server: 10
-│   ├── Network Egress Filter: 8
-│   └── Consent Network: 4
-└── E2E Tests: 6
-    ├── Integration: 3
-    └── Security: 3
-```
-
-### Testleri Çalıştır
-
+### 4. Start the Server
 ```bash
-cd projects/agent-federation
-
-# Tüm testler
-npm test
-
-# Coverage raporu
-npm test -- --coverage
-
-# Sadece security testleri
-npm test -- network-egress-filter
-npm test -- consent-network
+npm run dev
 ```
 
-## 🛡️ Güvenlik
+### 5. Open Dashboard
+Navigate to `http://localhost:3000` in your browser to access the Deep Ocean dashboard.
 
-### Network Egress Filtering
+## Screenshots
 
-Agent'ların network erişimi varsayılan olarak engellenir. Sadece whitelist'teki domain'lere erişebilirler:
+[Screenshot coming soon — Deep Ocean dashboard showing agent connections, consent requests, and audit logs]
 
-```typescript
-import { secureConfig, defaultAllowlist } from './src/security/network-egress-filter';
+## Configuration
 
-// Varsayılan whitelist
-const allowlist = defaultAllowlist();
-// ['api.openai.com', 'api.anthropic.com', 'api.github.com', ...]
+All settings via `.env` file:
 
-// Güvenli config
-const config = secureConfig({
-  allowlist: [...defaultAllowlist(), 'api.example.com'],
-  blockPrivateIPs: true,
-  allowedPorts: [443, 80],
-});
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | 18790 | WebSocket server port |
+| `HOST` | 0.0.0.0 | Server host binding |
+| `OPENCLAW_GATEWAY_URL` | http://localhost:18789 | OpenClaw gateway endpoint |
+| `OPENCLAW_GATEWAY_TOKEN` | (empty) | Authentication token |
+| `OPENCLAW_WORKSPACE` | ~/.openclaw/workspace | Local workspace directory |
+| `AGENT_LLM_BASE_URL` | http://localhost:18789/v1 | LLM API endpoint |
+| `AGENT_LLM_API_KEY` | (empty) | LLM API key |
+| `AGENT_LLM_MODEL` | qwen3.5-plus | Default LLM model |
+| `AGENT_NAME` | MrClaw | Agent identifier |
+| `AGENT_SYSTEM_PROMPT` | (empty) | System prompt for agent |
+
+## Architecture
+
+Agent Federation follows a modular, zero-dependency design:
+
+```
+src/
+├── agent/                    # Agent orchestration & LLM client
+│   ├── agent.ts             # Agent class, OpenClaw identity loader
+│   └── llm.ts               # LLM API client (fetch-based, zero deps)
+├── consent/                 # Human approval & subagent depth management
+│   └── consent.ts
+├── identity/                # DID system, ECDSA keys, agent registry
+│   └── agent.ts
+├── protocol/                # 7-layer injection defense pipeline
+│   └── injection-defense.ts
+├── registry/                # Agent directory, discovery, TTL
+│   └── directory.ts
+├── sandbox/                 # Folder isolation, path traversal protection
+│   └── sandbox.ts
+├── security/                # Network egress filtering
+│   └── network-egress-filter.ts
+├── server/                  # WebSocket, P2P, sessions, invitations
+│   ├── ws-server.ts         # Core WebSocket server
+│   ├── p2p.ts               # Peer-to-peer connection logic
+│   ├── auth.ts              # ECDSA authentication
+│   ├── messaging.ts         # Message routing
+│   ├── sessions.ts          # Session management
+│   ├── invitations.ts       # Invite code generation & validation
+│   ├── notifications.ts     # Event broadcasting
+│   ├── sandbox-fs.ts        # File system sandbox
+│   ├── approval.ts          # Consent tracking
+│   ├── audit-logger.ts      # JSONL logging
+│   ├── server-consent.ts    # Server-side approval logic
+│   └── types.ts             # TypeScript interfaces
+├── transport/               # WebSocket transport layer
+│   └── websocket.ts
+└── index.ts                 # Public API exports
+
+ui/                          # Next.js 14 Deep Ocean dashboard
+├── app/                     # App routing
+├── components/              # UI components (AgentCard, etc.)
+└── hooks/                   # useAgentFederation hook
+
+tests/                       # 221 tests across 11 files
+└── *.test.ts
 ```
 
-### Risk Skoru
+**Core Technology Stack:**
+- **TypeScript** (strict mode, ES2022)
+- **Node.js** (≥18)
+- **WebSocket** (ws library for real-time P2P)
+- **Vitest** (221 tests, 77.1% coverage)
+- **Next.js 14** + Tailwind CSS + shadcn/ui (dashboard)
+- **Zero external dependencies** (core library)
 
-Her işlem otomatik olarak risk skoru alır:
+## The 7 Immutable Laws
 
-| İşlem | Baz Skor | Ek Risk |
-|-------|----------|---------|
-| `read_file` | 10 | Path traversal: +40 |
-| `write_file` | 40 | - |
-| `execute_code` | 60 | - |
-| `network_request` | 50 | POST/PUT/DELETE: +15 |
-| `execute_code_with_network` | 80 | Private IP: +30 |
+Agent Federation's security philosophy rests on seven principles that cannot be overridden:
 
-**Otomatik Red:** Risk ≥ 90 → İşlem otomatik reddedilir
+1. **Human Decides** — Agents cannot send, accept invitations, or establish connections autonomously. Every connection requires human approval.
 
-### Injection Defense
+2. **Sandbox Boundary** — Agents operate exclusively within their permitted directory. No directory traversal, no system file access.
 
-7 katmanlı savunma:
+3. **7 Agent Limit** — Maximum 7 agents per federation group. Prevents sprawl and maintains governance at human scale.
 
-1. **Unicode Normalization** — Homoglyph saldırıları
-2. **Hidden Characters** — Zero-width, BOM, RTL override
-3. **Encoded Payloads** — Base64, hex, HTML entity
-4. **Injection Patterns** — "Ignore previous", "You are now"
-5. **Semantic Analysis** — Imperative count, DoS
-6. **Output Validation** — Response sanitization
-7. **Rate Limiting** — Anomaly detection
+4. **Injection Defense** — Every message passes through a 7-layer defense: Unicode normalization, hidden character detection, encoded payload filtering, injection pattern blocking, semantic analysis, output validation, and rate limiting.
 
-## 📖 Dokümantasyon
+5. **Federation** — No central authority. Each human owns their agent; no single point of failure or control.
 
-| Doküman | Açıklama |
-|---------|----------|
-| **[Kullanım Rehberi](docs/USAGE-GUIDE.md)** | Kapsamlı kullanım kılavuzu |
-| **[Güvenlik](docs/SECURITY.md)** | Güvenlik mimarisi, threat model |
-| **[WebSocket Server](docs/WEBSOCKET-SERVER.md)** | Server dokümantasyonu |
-| **[Dashboard](docs/DASHBOARD.md)** | UI bileşenleri |
-| **[Network Egress](docs/NETWORK_EGRESS_FILTERING.md)** | Network güvenlik detayları |
+6. **Full Visibility** — All communication is logged to JSONL. Humans can monitor everything; no hidden state.
 
-## 🔧 Teknoloji Stack
+7. **Time-Limited** — Every connection has an expiry date and auto-terminates. No permanent federation; relationships must be renewed.
 
-| Katman | Teknoloji |
-|--------|-----------|
-| **Backend** | TypeScript + Node.js |
-| **Transport** | WebSocket + Tailscale/Cloudflare Tunnel |
-| **Identity** | DID + Verifiable Credentials |
-| **Frontend** | Next.js 14 + Tailwind + shadcn/ui |
-| **Security** | 7-katmanlı input sanitization pipeline |
-| **Testing** | Vitest + E2E tests |
+## WebSocket Protocol
 
-## 📦 Modül Eksportları
+### Server → Client Messages
 
-```typescript
-// Ana export'lar
-import {
-  // Identity
-  generateAgentDID,
-  parseDID,
-  createInvitation,
-  
-  // Consent
-  ConsentManager,
-  
-  // Sandbox
-  Sandbox,
-  defaultSandbox,
-  
-  // Security
-  NetworkEgressFilter,
-  secureConfig,
-  defaultAllowlist,
-  
-  // Transport
-  Transport,
-  
-  // Server
-  WebSocketServerManager,
-  
-  // Registry
-  AgentDirectory,
-  
-  // Protocol
-  scanMessage,
-  InjectionDefense,
-} from './src/index';
+| Type | Payload | Description |
+|------|---------|-------------|
+| `welcome` | agentName, version | Initial handshake |
+| `invitation_created` | code, expiresAt | Invite code generated |
+| `connection_status` | agentName, status | Connection state change |
+| `conversation_started` | agentNames, sessionId | New conversation |
+| `agent_thinking` | agentName, topic | Agent processing |
+| `agent_stream_chunk` | agentName, chunk | Streaming response |
+| `agent_message` | agentName, message, timestamp | Complete message |
+| `conversation_ended` | reason, timestamp | Conversation closed |
+| `sandbox_action_result` | action, result, path | File operation result |
+| `sandbox_approval_request` | action, path, riskScore | Asks human for approval |
+| `sandbox_approval_resolved` | approved, action, path | Approval decision |
+| `approval_mode_changed` | mode | Manual or allow_all |
+| `agent_count_updated` | count | Connected agents changed |
+| `agent_statuses` | agents[] | Full agent list |
+| `error` | code, message | Error event |
+
+### Client → Server Messages
+
+| Type | Payload | Description |
+|------|---------|-------------|
+| `text` | content | Agent chat message |
+| `file` | name, content, path | File upload |
+| `invitation_request` | action | Create/revoke code |
+| `invitation_response` | code, accept | Join with code |
+| `consent_request` | action, params | Request approval |
+| `consent_response` | approved, actionId | Respond to approval |
+| `heartbeat` | timestamp | Keep-alive |
+
+## Development
+
+### Running Tests
+```bash
+npm test                 # Run all tests
+npm run test:watch      # Watch mode
+npm run test:coverage   # Coverage report
 ```
 
-## 📝 Lisans
+### Code Standards
+- **TypeScript strict mode** enforced
+- **ES2022** target
+- **Zero external dependencies** for core (only `ws` for WebSocket)
+- **Vitest** for unit + integration tests
+- **80%+ coverage** target (currently 77.1%)
 
-MIT License — Detaylar için [LICENSE](LICENSE) dosyasına bakın.
+### Contributing
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Write tests for your changes
+4. Ensure TypeScript passes strict checks
+5. Commit with clear messages
+6. Push and open a pull request
+
+We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
+
+## Roadmap
+
+- [ ] **Multi-language support** — i18n for dashboard + protocol
+- [ ] **Agent marketplace** — Discover and subscribe to public agents
+- [ ] **Webhook notifications** — HTTP callbacks for federation events
+- [ ] **Advanced risk scoring** — ML-based anomaly detection
+- [ ] **Agent cloning** — Snapshot and replay agent interactions
+- [ ] **Temporal federation** — Time-travel through conversation history
+
+## License
+
+MIT License — see [LICENSE](LICENSE) for details.
+
+## Credits
+
+Built on the [OpenClaw](https://github.com/openclaw/openclaw) ecosystem. Thanks to all contributors who've helped shape the future of human-controlled AI federation.
 
 ---
 
-**🦀 Happy Federating!**
+**Questions?** Open an issue on GitHub or join our [community discussions](https://github.com/openclaw/agent-federation/discussions).
+
+**Found a bug?** Please report it with the [bug report template](https://github.com/openclaw/agent-federation/issues/new?template=bug_report.md).

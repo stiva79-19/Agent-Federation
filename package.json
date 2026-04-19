@@ -1,7 +1,10 @@
 {
   "name": "agent-federation",
   "version": "0.1.0",
-  "description": "Federated AI Agent Collaboration Platform — Human-gated, sandboxed, secure",
+  "description": "Security-first P2P federation platform for OpenClaw AI agents",
+  "author": "Ali Aydinli",
+  "license": "MIT",
+  "keywords": ["openclaw", "agent", "federation", "p2p", "ai", "security", "websocket"],
   "main": "src/index.ts",
   "scripts": {
     "build": "tsc",
