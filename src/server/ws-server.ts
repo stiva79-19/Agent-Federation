@@ -11,6 +11,9 @@
 import { WebSocketServer, WebSocket, RawData } from 'ws';
 import { EventEmitter } from 'events';
 import * as crypto from 'crypto';
+import * as http from 'http';
+import * as fs from 'fs';
+import * as path from 'path';
 import { NetworkEgressFilter, secureConfig } from '../security/network-egress-filter';
 import type { NetworkEgressConfig } from '../security/network-egress-filter';
 import { ConsentManager } from '../consent/consent';
@@ -51,6 +54,7 @@ export type { Notification, NotificationType } from './notifications';
  */
 export class WebSocketServerManager extends EventEmitter {
   private wss: WebSocketServer | null = null;
+  private httpServer: http.Server | null = null;
   private config: ServerConfig;
   private connections: Map<string, AgentConnection> = new Map();
   private pendingAuth: Map<WebSocket, AuthChallenge> = new Map();
@@ -129,7 +133,176 @@ export class WebSocketServerManager extends EventEmitter {
   }
 
   /**
+   * UI klasörü yolunu çözümler.
+   * Proje kökündeki ui/ dizinini arar.
+   */
+  private resolveUiPath(): string {
+    // Proje kökündeki ui/ klasörünü bul
+    return path.resolve(__dirname, '..', '..', 'ui');
+  }
+
+  /**
+   * MIME tipini dosya uzantısından belirler.
+   */
+  private getMimeType(filePath: string): string {
+    const ext = path.extname(filePath).toLowerCase();
+    const mimeTypes: Record<string, string> = {
+      '.html': 'text/html; charset=utf-8',
+      '.css': 'text/css; charset=utf-8',
+      '.js': 'application/javascript; charset=utf-8',
+      '.json': 'application/json; charset=utf-8',
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.gif': 'image/gif',
+      '.svg': 'image/svg+xml',
+      '.ico': 'image/x-icon',
+      '.woff': 'font/woff',
+      '.woff2': 'font/woff2',
+      '.ttf': 'font/ttf',
+      '.eot': 'application/vnd.ms-fontobject',
+      '.map': 'application/json',
+      '.tsx': 'text/plain; charset=utf-8',
+      '.ts': 'text/plain; charset=utf-8',
+      '.mjs': 'application/javascript; charset=utf-8',
+    };
+    return mimeTypes[ext] || 'application/octet-stream';
+  }
+
+  /**
+   * Statik dosya servis eder.
+   * Path traversal saldırılarına karşı güvenlik kontrolü yapar.
+   */
+  private serveStaticFile(
+    res: http.ServerResponse,
+    filePath: string,
+    baseDir: string,
+  ): void {
+    // Path traversal koruması: çözümlenmiş yol baseDir içinde olmalı
+    const resolvedPath = path.resolve(filePath);
+    const resolvedBase = path.resolve(baseDir);
+    if (!resolvedPath.startsWith(resolvedBase + path.sep) && resolvedPath !== resolvedBase) {
+      res.writeHead(403, { 'Content-Type': 'text/plain' });
+      res.end('Forbidden');
+      return;
+    }
+
+    fs.stat(resolvedPath, (err, stats) => {
+      if (err || !stats.isFile()) {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end('Not Found');
+        return;
+      }
+
+      const mimeType = this.getMimeType(resolvedPath);
+      res.writeHead(200, { 'Content-Type': mimeType });
+      fs.createReadStream(resolvedPath).pipe(res);
+    });
+  }
+
+  /**
+   * HTTP isteklerini işler.
+   * WebSocket olmayan isteklere yanıt verir: health check, UI dosyaları, vb.
+   */
+  private handleHttpRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
+    const url = req.url || '/';
+    const parsedPath = url.split('?')[0]; // Query string'i ayır
+
+    // /health → JSON status
+    if (parsedPath === '/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({
+        status: 'ok',
+        connections: this.connections.size,
+        uptime: process.uptime(),
+      }));
+      return;
+    }
+
+    // /api/stats → Server istatistikleri
+    if (parsedPath === '/api/stats') {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(this.getStats()));
+      return;
+    }
+
+    const uiDir = this.resolveUiPath();
+
+    // / → ui/index.html veya ui/app/page.tsx (fallback)
+    if (parsedPath === '/' || parsedPath === '/index.html') {
+      const indexPath = path.join(uiDir, 'index.html');
+      fs.access(indexPath, fs.constants.R_OK, (err) => {
+        if (!err) {
+          this.serveStaticFile(res, indexPath, uiDir);
+        } else {
+          // Next.js app varsa bilgilendirici bir HTML döndür
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+          res.end(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Federation</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a0a; color: #e0e0e0; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+    .container { text-align: center; max-width: 600px; padding: 2rem; }
+    h1 { color: #60a5fa; margin-bottom: 0.5rem; }
+    .status { color: #34d399; font-weight: bold; }
+    a { color: #60a5fa; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .info { margin-top: 1.5rem; padding: 1rem; background: #1a1a2e; border-radius: 8px; text-align: left; }
+    code { background: #2d2d44; padding: 0.2rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Agent Federation</h1>
+    <p class="status">Server Running</p>
+    <div class="info">
+      <p><strong>WebSocket:</strong> <code>ws://localhost:${this.config.port}</code></p>
+      <p><strong>Health:</strong> <a href="/health">/health</a></p>
+      <p><strong>Stats:</strong> <a href="/api/stats">/api/stats</a></p>
+      <p><strong>UI:</strong> Next.js app — run <code>cd ui && npm run dev</code> for full UI</p>
+    </div>
+  </div>
+</body>
+</html>`);
+        }
+      });
+      return;
+    }
+
+    // /ui/* → ui/ klasöründen statik dosya servis et
+    if (parsedPath.startsWith('/ui/')) {
+      const relativePath = parsedPath.slice(4); // '/ui/' prefixini kaldır
+      const filePath = path.join(uiDir, relativePath);
+      this.serveStaticFile(res, filePath, uiDir);
+      return;
+    }
+
+    // Diğer statik dosyalar (favicon.ico, vb.)
+    const filePath = path.join(uiDir, parsedPath);
+    const resolvedFilePath = path.resolve(filePath);
+    const resolvedUiDir = path.resolve(uiDir);
+    if (resolvedFilePath.startsWith(resolvedUiDir + path.sep) || resolvedFilePath === resolvedUiDir) {
+      fs.access(resolvedFilePath, fs.constants.R_OK, (err) => {
+        if (!err) {
+          this.serveStaticFile(res, resolvedFilePath, uiDir);
+        } else {
+          res.writeHead(404, { 'Content-Type': 'text/plain' });
+          res.end('Not Found');
+        }
+      });
+      return;
+    }
+
+    res.writeHead(404, { 'Content-Type': 'text/plain' });
+    res.end('Not Found');
+  }
+
+  /**
    * Server'ı başlatır.
+   * Aynı port üzerinden hem HTTP hem WebSocket bağlantılarını kabul eder.
    */
   async start(): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -139,34 +312,32 @@ export class WebSocketServerManager extends EventEmitter {
           console.warn('[WS Server] ⚠️  DEPRECATION WARNING: ssl:false is deprecated and will be removed in a future version. SSL/TLS is now required for production. Set ssl:true and provide certPath/keyPath.');
         }
 
-        const options: Record<string, unknown> = {
-          port: this.config.port,
-          host: this.config.host || '0.0.0.0',
-        };
-
-        // SSL/TLS configuration (required for production)
+        // HTTP server oluştur — hem HTTP isteklerini hem WebSocket upgrade'lerini yönetir
         const sslEnabled = this.config.ssl !== false; // Default to true
-        if (sslEnabled) {
-          if (!this.config.certPath || !this.config.keyPath) {
+        if (sslEnabled && this.config.certPath && this.config.keyPath) {
+          // SSL configured - load certificates
+          const https = require('https');
+          const certData = fs.readFileSync(this.config.certPath);
+          const keyData = fs.readFileSync(this.config.keyPath);
+          this.httpServer = https.createServer(
+            { cert: certData, key: keyData },
+            (req: http.IncomingMessage, res: http.ServerResponse) => this.handleHttpRequest(req, res),
+          );
+          console.log('[WS Server] SSL/TLS enabled with provided certificates');
+        } else {
+          if (sslEnabled) {
             console.warn('[WS Server] ⚠️  SSL enabled but certPath/keyPath not provided. Server will start without SSL. For production, set ssl:true with certPath and keyPath.');
-          } else {
-            // SSL configured - load certificates
-            const fs = require('fs');
-            options.cert = fs.readFileSync(this.config.certPath);
-            options.key = fs.readFileSync(this.config.keyPath);
-            console.log('[WS Server] SSL/TLS enabled with provided certificates');
           }
+          this.httpServer = http.createServer(
+            (req: http.IncomingMessage, res: http.ServerResponse) => this.handleHttpRequest(req, res),
+          );
         }
 
-        this.wss = new WebSocketServer(options);
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+        const httpServer = this.httpServer!;
 
-        this.wss.on('listening', () => {
-          console.log(`[WS Server] Listening on port ${this.config.port}`);
-          this.startHeartbeat();
-          this.invitationManager.startCleanup();
-          this.sessionManager.startCleanup();
-          resolve();
-        });
+        // WebSocketServer'ı mevcut HTTP server'a bağla (noServer yerine server kullan)
+        this.wss = new WebSocketServer({ server: httpServer });
 
         this.wss.on('error', (error) => {
           console.error('[WS Server] Error:', error);
@@ -176,6 +347,22 @@ export class WebSocketServerManager extends EventEmitter {
 
         this.wss.on('connection', (ws: WebSocket, req: Record<string, unknown>) => {
           this.handleConnection(ws, req);
+        });
+
+        // HTTP server'ı dinlemeye başla
+        const host = this.config.host || '0.0.0.0';
+        httpServer.listen(this.config.port, host, () => {
+          console.log(`[WS Server] Listening on port ${this.config.port} (HTTP + WebSocket)`);
+          this.startHeartbeat();
+          this.invitationManager.startCleanup();
+          this.sessionManager.startCleanup();
+          resolve();
+        });
+
+        httpServer.on('error', (error) => {
+          console.error('[WS Server] HTTP Server Error:', error);
+          this.emit('error', error);
+          reject(error);
         });
 
       } catch (error) {
@@ -202,9 +389,16 @@ export class WebSocketServerManager extends EventEmitter {
 
     if (this.wss) {
       this.wss.close(() => {
-        console.log('[WS Server] Closed');
+        console.log('[WS Server] WebSocket closed');
       });
       this.wss = null;
+    }
+
+    if (this.httpServer) {
+      this.httpServer.close(() => {
+        console.log('[WS Server] HTTP server closed');
+      });
+      this.httpServer = null;
     }
   }
 
