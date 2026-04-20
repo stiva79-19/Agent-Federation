@@ -85,44 +85,194 @@ export interface TokenUsage {
 }
 
 /**
- * OpenClaw Gateway yapılandırmasını env var'lardan çözer.
- * OPENCLAW_GATEWAY_URL varsa base URL ve token'ı oradan alır.
+ * OpenClaw workspace'inden LLM yapılandırmasını otomatik çözer.
+ *
+ * Sırasıyla şunları yapar:
+ * 1. ~/.openclaw/openclaw.json okur
+ * 2. auth.profiles içinden api_key modundaki aktif provider'ı bulur
+ *    (örn: "qwen:default" → provider: "qwen")
+ * 3. models.providers.<name>.baseUrl + ilk model id'sini alır
+ * 4. ~/.openclaw/credentials/<provider>.* dosyasından gerçek API key'i okur
+ *    - <provider>.json (JSON: apiKey|api_key|token|key alanları)
+ *    - <provider>.key veya <provider> (düz text)
+ *    - Klasör içindeki tek dosya
+ * 5. Her adım başarısız olursa boş/varsayılan değer döner
+ *
+ * @returns { baseUrl, apiKey, model, providerName }
  */
-function resolveGatewayConfig(): { baseUrl: string; apiKey: string; model: string } {
-  const gatewayUrl = process.env['OPENCLAW_GATEWAY_URL'];
-  const gatewayToken = process.env['OPENCLAW_GATEWAY_TOKEN'] ?? '';
+function resolveOpenClawProvider(): { baseUrl: string; apiKey: string; model: string; providerName: string } {
+  const empty = { baseUrl: '', apiKey: '', model: '', providerName: '' };
 
-  if (gatewayUrl) {
-    return {
-      baseUrl: `${gatewayUrl.replace(/\/+$/, '')}/v1`,
-      apiKey: gatewayToken,
-      model: 'qwen3.5-plus',
-    };
+  try {
+    // fs ve path'i inline require et (isomorphic: sadece node'da çalışır)
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require('fs') as typeof import('fs');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const path = require('path') as typeof import('path');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const os = require('os') as typeof import('os');
+
+    const workspace = process.env['OPENCLAW_WORKSPACE'] || path.join(os.homedir(), '.openclaw');
+    const configPath = path.join(workspace, 'openclaw.json');
+    if (!fs.existsSync(configPath)) return empty;
+
+    const raw = fs.readFileSync(configPath, 'utf-8');
+    const config = JSON.parse(raw) as Record<string, unknown>;
+
+    // 1) Aktif provider'ı bul: auth.profiles içinde "mode":"api_key" olan ilk giriş
+    const auth = config['auth'] as { profiles?: Record<string, { provider?: string; mode?: string }> } | undefined;
+    const profiles = auth?.profiles ?? {};
+    let providerName = '';
+    for (const profile of Object.values(profiles)) {
+      if (profile && profile.mode === 'api_key' && typeof profile.provider === 'string') {
+        providerName = profile.provider;
+        break;
+      }
+    }
+    if (!providerName) {
+      // Fallback: models.providers içindeki ilk girişi al
+      const models = config['models'] as { providers?: Record<string, unknown> } | undefined;
+      const names = Object.keys(models?.providers ?? {});
+      if (names.length > 0) providerName = names[0];
+    }
+    if (!providerName) return empty;
+
+    // 2) baseUrl + model'i oku
+    const modelsNode = (config['models'] as { providers?: Record<string, { baseUrl?: string; models?: Array<{ id?: string }> }> } | undefined);
+    const providerNode = modelsNode?.providers?.[providerName];
+    const baseUrl = (providerNode?.baseUrl ?? '').replace(/\/+$/, '');
+    const firstModel = providerNode?.models?.[0]?.id ?? '';
+    if (!baseUrl || !firstModel) return empty;
+
+    // 3) API key'i credentials/ klasöründen oku
+    const apiKey = readCredential(workspace, providerName, fs, path);
+
+    return { baseUrl, apiKey, model: firstModel, providerName };
+  } catch {
+    return empty;
+  }
+}
+
+/**
+ * OpenClaw credentials/ klasöründen provider için gerçek API key'i okur.
+ * Birkaç olası format dener: JSON, düz text, tek dosyalı klasör.
+ */
+function readCredential(
+  workspace: string,
+  providerName: string,
+  fs: typeof import('fs'),
+  path: typeof import('path'),
+): string {
+  const credDir = path.join(workspace, 'credentials');
+  if (!fs.existsSync(credDir)) return '';
+
+  // Olası dosya isimleri: qwen.json, qwen.key, qwen, qwen-api-key.json vb.
+  const candidates = [
+    `${providerName}.json`,
+    `${providerName}.key`,
+    `${providerName}.txt`,
+    providerName,
+  ];
+
+  for (const name of candidates) {
+    const filePath = path.join(credDir, name);
+    if (!fs.existsSync(filePath)) continue;
+    try {
+      const stat = fs.statSync(filePath);
+      if (stat.isDirectory()) continue;
+      const content = fs.readFileSync(filePath, 'utf-8').trim();
+      if (!content) continue;
+      // JSON parse dene
+      if (content.startsWith('{')) {
+        try {
+          const obj = JSON.parse(content) as Record<string, unknown>;
+          const keyFields = ['apiKey', 'api_key', 'token', 'key', 'secret'];
+          for (const field of keyFields) {
+            const val = obj[field];
+            if (typeof val === 'string' && val.length > 0) return val;
+          }
+        } catch { /* düz text'e devam */ }
+      }
+      return content;
+    } catch { /* sonraki adayı dene */ }
   }
 
-  // Varsayılan: OpenClaw Gateway localhost
+  // Son çare: provider adına uyan bir alt klasör varsa içindeki ilk dosyayı oku
+  const providerSubdir = path.join(credDir, providerName);
+  if (fs.existsSync(providerSubdir) && fs.statSync(providerSubdir).isDirectory()) {
+    const files = fs.readdirSync(providerSubdir).filter(f => !f.startsWith('.'));
+    for (const f of files) {
+      try {
+        const content = fs.readFileSync(path.join(providerSubdir, f), 'utf-8').trim();
+        if (content) return content.startsWith('{') ? extractJsonKey(content) : content;
+      } catch { /* ignore */ }
+    }
+  }
+
+  return '';
+}
+
+function extractJsonKey(content: string): string {
+  try {
+    const obj = JSON.parse(content) as Record<string, unknown>;
+    const keyFields = ['apiKey', 'api_key', 'token', 'key', 'secret'];
+    for (const field of keyFields) {
+      const val = obj[field];
+      if (typeof val === 'string' && val.length > 0) return val;
+    }
+  } catch { /* ignore */ }
+  return '';
+}
+
+/**
+ * LLM yapılandırmasını üretir.
+ *
+ * Öncelik sırası (ilk bulunan kazanır):
+ * 1. Doğrudan override (constructor parametreleri)
+ * 2. AGENT_LLM_* env var'ları (manuel kontrol için)
+ * 3. OpenClaw workspace (otomatik: openclaw.json + credentials/)
+ * 4. Varsayılanlar
+ */
+export function loadLLMConfig(overrides?: Partial<LLMConfig>): LLMConfig {
+  const openclaw = resolveOpenClawProvider();
+
+  const baseUrl =
+    overrides?.baseUrl ??
+    process.env['AGENT_LLM_BASE_URL'] ??
+    (openclaw.baseUrl || 'http://localhost:18789/v1');
+
+  const apiKey =
+    overrides?.apiKey ??
+    process.env['AGENT_LLM_API_KEY'] ??
+    openclaw.apiKey ??
+    '';
+
+  const model =
+    overrides?.model ??
+    process.env['AGENT_LLM_MODEL'] ??
+    (openclaw.model || 'qwen3.5-plus');
+
   return {
-    baseUrl: 'http://localhost:18789/v1',
-    apiKey: '',
-    model: 'qwen3.5-plus',
+    baseUrl,
+    apiKey,
+    model,
+    maxTokens: overrides?.maxTokens ?? 1024,
+    temperature: overrides?.temperature ?? 0.7,
+    timeoutMs: overrides?.timeoutMs ?? 30_000,
   };
 }
 
 /**
- * Env var'lardan LLM yapılandırması oluşturur.
- *
- * Öncelik: override > AGENT_LLM_* env > OpenClaw Gateway env > varsayılan
+ * OpenClaw'dan otomatik yüklenen provider bilgilerini döner.
+ * Dashboard ve debug için kullanılır. Boş değerler, yükleme başarısız demek.
  */
-export function loadLLMConfig(overrides?: Partial<LLMConfig>): LLMConfig {
-  const gateway = resolveGatewayConfig();
-
+export function getOpenClawAutoConfig(): { baseUrl: string; model: string; providerName: string; hasApiKey: boolean } {
+  const r = resolveOpenClawProvider();
   return {
-    baseUrl: overrides?.baseUrl ?? process.env['AGENT_LLM_BASE_URL'] ?? gateway.baseUrl,
-    apiKey: overrides?.apiKey ?? process.env['AGENT_LLM_API_KEY'] ?? gateway.apiKey,
-    model: overrides?.model ?? process.env['AGENT_LLM_MODEL'] ?? gateway.model,
-    maxTokens: overrides?.maxTokens ?? 1024,
-    temperature: overrides?.temperature ?? 0.7,
-    timeoutMs: overrides?.timeoutMs ?? 30_000,
+    baseUrl: r.baseUrl,
+    model: r.model,
+    providerName: r.providerName,
+    hasApiKey: r.apiKey.length > 0,
   };
 }
 

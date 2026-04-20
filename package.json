@@ -25,7 +25,6 @@
     "deploy": "fly deploy"
   },
   "dependencies": {
-    "@rollup/rollup-linux-arm64-gnu": "^4.60.2",
     "hyperswarm": "^4.17.0",
     "tsx": "^4.19.2",
     "ws": "^8.16.0"

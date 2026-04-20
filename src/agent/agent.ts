@@ -25,6 +25,8 @@ export interface AgentConfig {
   maxTurns: number;
   /** LLM yapılandırması */
   llmConfig?: Partial<LLMConfig>;
+  /** OpenClaw kimliği (IDENTITY.md + SOUL.md'den) — opsiyonel */
+  openclawIdentity?: OpenClawIdentity | null;
 }
 
 /**
@@ -126,6 +128,19 @@ export class Agent {
   /** LLM yapılandırılmış mı */
   get isLLMConfigured(): boolean {
     return this.llm.isConfigured();
+  }
+
+  /** OpenClaw workspace'inden kimlik yüklenmiş mi */
+  get isOpenClawConfigured(): boolean {
+    const identity = this.config.openclawIdentity;
+    if (!identity) return false;
+    // IDENTITY.md ve SOUL.md en azından birinin içeriği olmalı
+    return !!(identity.identityRaw || identity.soulRaw);
+  }
+
+  /** OpenClaw kimlik bilgileri (varsa) */
+  get openclawIdentity(): OpenClawIdentity | null {
+    return this.config.openclawIdentity ?? null;
   }
 
   /**
@@ -381,6 +396,8 @@ export class Agent {
     maxTurns: number;
     messageCount: number;
     tokenUsage: TokenUsage;
+    openclawConfigured: boolean;
+    llmConfigured: boolean;
   } {
     return {
       name: this.name,
@@ -389,6 +406,8 @@ export class Agent {
       maxTurns: this.config.maxTurns,
       messageCount: this.history.length,
       tokenUsage: this.tokenUsage,
+      openclawConfigured: this.isOpenClawConfigured,
+      llmConfigured: this.isLLMConfigured,
     };
   }
 }
@@ -534,5 +553,6 @@ export function loadAgentConfig(overrides?: Partial<AgentConfig>): AgentConfig {
     systemPrompt: overrides?.systemPrompt ?? process.env['AGENT_SYSTEM_PROMPT'] ?? defaultPrompt,
     maxTurns: overrides?.maxTurns ?? 20,
     llmConfig: overrides?.llmConfig,
+    openclawIdentity: overrides?.openclawIdentity !== undefined ? overrides.openclawIdentity : identity,
   };
 }

@@ -33,6 +33,7 @@ import { P2PManager } from './p2p';
 import { Agent, loadAgentConfig, loadOpenClawIdentity } from '../agent/agent';
 import type { OpenClawIdentity } from '../agent/agent';
 import type { LLMConfig } from '../agent/llm';
+import { getOpenClawAutoConfig, loadLLMConfig } from '../agent/llm';
 import type { SwarmManager } from '../swarm/swarm-manager';
 import type { SwarmMessage } from '../swarm/protocol';
 import { SandboxFS } from './sandbox-fs';
@@ -612,7 +613,18 @@ export class WebSocketServerManager extends EventEmitter {
 
     console.log(`[WS Server] Dashboard client connected: ${clientId}`);
 
-    // Client'a hoşgeldin mesajı (OpenClaw kimlik bilgileri + agent sayacı + swarm bilgisi dahil)
+    // OpenClaw workspace'inden LLM ayarlarını otomatik yükle
+    const llmAuto = getOpenClawAutoConfig();
+    const llmCfg = loadLLMConfig();
+    if (llmAuto.hasApiKey && llmAuto.baseUrl && llmAuto.model) {
+      agent.updateLLMConfig({
+        baseUrl: llmCfg.baseUrl,
+        apiKey: llmCfg.apiKey,
+        model: llmCfg.model,
+      });
+    }
+
+    // Client'a hoşgeldin mesajı (OpenClaw kimlik bilgileri + LLM otomatik config + agent sayacı + swarm bilgisi)
     this.sendDashboard(ws, {
       type: 'welcome',
       clientId,
@@ -620,12 +632,20 @@ export class WebSocketServerManager extends EventEmitter {
       agentSystemPrompt: agent.systemPrompt,
       connectedAgents: this.dashboardClients.size,
       maxAgents: MAX_CONNECTED_AGENTS,
+      openclawConfigured: agent.isOpenClawConfigured,
       openclawIdentity: this.openclawIdentity ? {
         name: this.openclawIdentity.name,
         emoji: this.openclawIdentity.emoji,
         creature: this.openclawIdentity.creature,
         vibe: this.openclawIdentity.vibe,
       } : null,
+      llmAutoConfig: {
+        baseUrl: llmCfg.baseUrl,
+        model: llmCfg.model,
+        providerName: llmAuto.providerName,
+        configured: agent.isLLMConfigured,
+        source: llmAuto.hasApiKey ? 'openclaw' : (process.env['AGENT_LLM_API_KEY'] ? 'env' : 'manual'),
+      },
       swarmEnabled: this.swarmManager !== null,
       swarmSessionInfo: this.swarmManager?.getSessionInfo() ?? null,
     });
@@ -843,8 +863,12 @@ export class WebSocketServerManager extends EventEmitter {
       return;
     }
 
-    if (!agent.isLLMConfigured) {
-      this.sendDashboard(ws, { type: 'error', message: 'LLM API key yapılandırılmamış. Sağ paneldeki ayarlardan API key girin.' });
+    // OpenClaw agent kontrolü — asıl agent kimliği OpenClaw workspace'inden geliyor
+    if (!agent.isOpenClawConfigured) {
+      this.sendDashboard(ws, {
+        type: 'error',
+        message: 'OpenClaw agent yapılandırılmamış. ~/.openclaw/workspace altında IDENTITY.md ve SOUL.md dosyaları bulunmalı veya OPENCLAW_WORKSPACE env var\'ını ayarlayın.',
+      });
       return;
     }
 
@@ -863,8 +887,11 @@ export class WebSocketServerManager extends EventEmitter {
       return;
     }
 
-    if (!peerAgent.isLLMConfigured) {
-      this.sendDashboard(ws, { type: 'error', message: 'Karşı tarafın LLM API key\'i yapılandırılmamış.' });
+    if (!peerAgent.isOpenClawConfigured) {
+      this.sendDashboard(ws, {
+        type: 'error',
+        message: 'Karşı tarafın OpenClaw agent\'ı yapılandırılmamış. Karşı tarafın ~/.openclaw/workspace altında IDENTITY.md + SOUL.md dosyaları olmalı.',
+      });
       return;
     }
 
@@ -1257,8 +1284,9 @@ export class WebSocketServerManager extends EventEmitter {
       return;
     }
 
+    const swarmType = (swarmMessage['type'] as import('../swarm/protocol').SwarmMessageType | undefined) ?? 'agent_message';
     this.swarmManager.broadcastPayload(
-      (swarmMessage['type'] as string) || 'agent_message',
+      swarmType,
       swarmMessage['payload'] ?? swarmMessage,
     );
   }

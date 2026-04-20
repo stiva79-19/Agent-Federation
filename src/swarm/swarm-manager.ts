@@ -22,7 +22,6 @@ import {
   type PeerJoinedPayload,
   type PeerLeftPayload,
   type ErrorPayload,
-  PROTOCOL_VERSION,
   HEARTBEAT_INTERVAL,
   HEARTBEAT_TIMEOUT,
   HANDSHAKE_TIMEOUT,
@@ -619,7 +618,7 @@ export class SwarmManager extends EventEmitter {
   /**
    * Ping'e pong ile yanıt verir.
    */
-  private handlePing(peerId: string, peer: PeerConnection): void {
+  private handlePing(_peerId: string, peer: PeerConnection): void {
     const pong = createPong({ agentName: this.config.agentName, agentDid: this.config.agentDid });
     try {
       (peer.socket as NodeJS.WritableStream).write(serializeMessage(pong));
