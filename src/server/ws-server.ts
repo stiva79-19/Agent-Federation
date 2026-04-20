@@ -213,12 +213,21 @@ export class WebSocketServerManager extends EventEmitter {
       });
     });
 
-    // Swarm'dan gelen mesajları dashboard'a ilet
-    manager.on('message', (_peerId: string, message: SwarmMessage) => {
+    // Swarm'dan gelen mesajları dashboard'a ilet + local agent işle
+    manager.on('message', (peerId: string, message: SwarmMessage) => {
+      // Dashboard'a forward et (UI güncellemesi için)
       this.broadcastToDashboard({
         type: 'swarm_message',
+        peerId,
         swarmMessage: message,
       });
+
+      // agent_message gelirse local agent LLM ile yanıt üret ve swarm'a broadcast et
+      if (message.type === 'agent_message') {
+        this.handleIncomingSwarmAgentMessage(peerId, message).catch((err) => {
+          console.error('[WS Server] Swarm agent message processing error:', err);
+        });
+      }
     });
 
     manager.on('error', (error: Error) => {
@@ -227,6 +236,233 @@ export class WebSocketServerManager extends EventEmitter {
         message: error.message,
       });
     });
+  }
+
+  /**
+   * Swarm'dan gelen agent_message'ı local agent ile işler ve yanıtı broadcast eder.
+   *
+   * Model: Her peer bağımsız — kendi LLM'i ile yanıt verir.
+   * Aynı anda sadece bir local konuşma aktif olabilir (race prevention).
+   */
+  private async handleIncomingSwarmAgentMessage(_peerId: string, message: SwarmMessage): Promise<void> {
+    if (!this.swarmManager) return;
+
+    const payload = message.payload as { content?: string; role?: string; turn?: number; maxTurns?: number } | undefined;
+    if (!payload?.content) return;
+
+    // İlk (host) dashboard client'ı ve agent'ı al — swarm mode'da tek local agent konuşuyor
+    const firstClientId = this.dashboardClients.keys().next().value;
+    if (!firstClientId) return;
+
+    const agent = this.clientAgents.get(firstClientId);
+    if (!agent || !agent.isLLMConfigured) {
+      console.warn('[WS Server] Swarm message received but local agent not configured');
+      return;
+    }
+
+    // Aktif konuşma yoksa başlat — swarm mode için tek state
+    let convState = this.activeConversations.get('__swarm__');
+    if (!convState) {
+      convState = { running: true };
+      this.activeConversations.set('__swarm__', convState);
+    }
+
+    if (!convState.running) return;
+
+    const maxTurns = agent.maxTurns;
+    const turn = (payload.turn ?? 0) + 1;
+    if (turn > maxTurns) {
+      console.log(`[WS Server] Swarm conversation max turns reached (${maxTurns})`);
+      convState.running = false;
+      this.activeConversations.delete('__swarm__');
+      this.swarmManager.broadcastPayload('agent_message', {
+        content: '[Konuşma maksimum tura ulaştı]',
+        role: 'peer',
+        turn,
+        maxTurns,
+      });
+      return;
+    }
+
+    try {
+      // "Düşünüyor" bildirimi broadcast
+      this.swarmManager.broadcastPayload('agent_thinking', {
+        agentName: agent.name,
+        turn,
+      });
+
+      // Local dashboard'a da gönder
+      const clientWs = this.dashboardClients.get(firstClientId);
+      if (clientWs) {
+        this.sendDashboard(clientWs, {
+          type: 'agent_thinking',
+          agentName: agent.name,
+          turn,
+        });
+      }
+
+      // LLM streaming — her chunk'ı swarm'a broadcast et
+      const response = await agent.processMessageStream(
+        payload.content,
+        (chunk: string) => {
+          if (!convState!.running || !this.swarmManager) return;
+          this.swarmManager.broadcastPayload('agent_stream_chunk', {
+            agentName: agent.name,
+            chunk,
+            role: 'peer',
+          });
+          // Local dashboard'a da
+          if (clientWs) {
+            this.sendDashboard(clientWs, {
+              type: 'agent_stream_chunk',
+              agentName: agent.name,
+              chunk,
+              role: 'peer',
+            });
+          }
+        },
+        'peer',
+      );
+
+      if (!convState.running) return;
+
+      // Tam yanıtı broadcast et
+      this.swarmManager.broadcastPayload('agent_message', {
+        content: response,
+        role: 'peer',
+        turn,
+        maxTurns,
+        stats: agent.getStats(),
+      });
+
+      // Local dashboard'a da
+      if (clientWs) {
+        this.sendDashboard(clientWs, {
+          type: 'agent_message',
+          agentName: agent.name,
+          content: response,
+          role: 'self',
+          turn,
+          maxTurns,
+          stats: agent.getStats(),
+        });
+      }
+    } catch (err) {
+      console.error('[WS Server] Swarm LLM error:', err);
+      convState.running = false;
+      this.activeConversations.delete('__swarm__');
+      this.broadcastToDashboard({
+        type: 'conversation_error',
+        error: err instanceof Error ? err.message : 'LLM hatası',
+      });
+    }
+  }
+
+  /**
+   * Swarm mode'da konuşma başlatır.
+   * Local agent'ın yanıtını üretir, swarm'a broadcast eder.
+   * Sonraki turlar peer'ların yanıtlarıyla devam eder (handleIncomingSwarmAgentMessage).
+   */
+  private async startSwarmConversation(clientId: string, ws: WebSocket, task: string): Promise<void> {
+    if (!this.swarmManager || !this.swarmManager.hasSession) {
+      this.sendDashboard(ws, { type: 'error', message: 'Aktif swarm session yok.' });
+      return;
+    }
+
+    const agent = this.clientAgents.get(clientId);
+    if (!agent) {
+      this.sendDashboard(ws, { type: 'error', message: 'Agent bulunamadı' });
+      return;
+    }
+
+    if (!agent.isLLMConfigured) {
+      this.sendDashboard(ws, { type: 'error', message: 'LLM API key yapılandırılmamış.' });
+      return;
+    }
+
+    if (this.swarmManager.peerCount === 0) {
+      this.sendDashboard(ws, { type: 'error', message: 'Bağlı peer yok. En az bir peer bağlanmalı.' });
+      return;
+    }
+
+    // Aktif konuşma varsa durdur
+    const existingConv = this.activeConversations.get('__swarm__');
+    if (existingConv) existingConv.running = false;
+
+    agent.reset();
+
+    const convState = { running: true };
+    this.activeConversations.set('__swarm__', convState);
+    this.activeConversations.set(clientId, convState);
+
+    // Konuşma başladı bildirimi — local + broadcast
+    const startMsg = {
+      type: 'conversation_started',
+      task,
+      maxTurns: agent.maxTurns,
+    };
+    this.sendDashboard(ws, startMsg);
+    this.swarmManager.broadcastPayload('agent_thinking', {
+      agentName: agent.name,
+      turn: 1,
+    });
+
+    try {
+      this.sendDashboard(ws, {
+        type: 'agent_thinking',
+        agentName: agent.name,
+        turn: 1,
+      });
+
+      // LLM streaming — her chunk'ı swarm'a broadcast et
+      const response = await agent.processMessageStream(
+        task,
+        (chunk: string) => {
+          if (!convState.running || !this.swarmManager) return;
+          this.swarmManager.broadcastPayload('agent_stream_chunk', {
+            agentName: agent.name,
+            chunk,
+            role: 'host',
+          });
+          this.sendDashboard(ws, {
+            type: 'agent_stream_chunk',
+            agentName: agent.name,
+            chunk,
+            role: 'host',
+          });
+        },
+        'user',
+      );
+
+      if (!convState.running) return;
+
+      // Tam yanıtı broadcast et
+      this.swarmManager.broadcastPayload('agent_message', {
+        content: response,
+        role: 'host',
+        turn: 1,
+        maxTurns: agent.maxTurns,
+        stats: agent.getStats(),
+      });
+
+      this.sendDashboard(ws, {
+        type: 'agent_message',
+        agentName: agent.name,
+        content: response,
+        role: 'host',
+        turn: 1,
+        maxTurns: agent.maxTurns,
+        stats: agent.getStats(),
+      });
+    } catch (err) {
+      convState.running = false;
+      this.activeConversations.delete('__swarm__');
+      this.activeConversations.delete(clientId);
+      this.sendDashboard(ws, {
+        type: 'conversation_error',
+        error: err instanceof Error ? err.message : 'LLM hatası',
+      });
+    }
   }
 
   /**
@@ -849,6 +1085,7 @@ export class WebSocketServerManager extends EventEmitter {
 
   /**
    * Konuşma başlatma — kullanıcı ilk görevi verir, agent döngüsü başlar.
+   * Swarm mode aktifse swarm path'e yönlendirir.
    */
   private handleStartConversation(clientId: string, ws: WebSocket, message: Record<string, unknown>): void {
     const task = message['task'] as string;
@@ -872,7 +1109,19 @@ export class WebSocketServerManager extends EventEmitter {
       return;
     }
 
-    // P2P eşleşmesi var mı?
+    // Swarm mode aktifse swarm path'i kullan
+    if (this.swarmManager && this.swarmManager.hasSession) {
+      this.startSwarmConversation(clientId, ws, task).catch((err) => {
+        console.error('[WS Server] Swarm conversation error:', err);
+        this.sendDashboard(ws, {
+          type: 'conversation_error',
+          error: err instanceof Error ? err.message : 'Swarm konuşma hatası',
+        });
+      });
+      return;
+    }
+
+    // Legacy P2P path — eşleşme var mı?
     const peerId = this.p2pManager.getPeerId(clientId);
     if (!peerId) {
       this.sendDashboard(ws, { type: 'error', message: 'Henüz bir eşleşme yok. Önce bağlantı kurun.' });
@@ -1051,12 +1300,26 @@ export class WebSocketServerManager extends EventEmitter {
 
   /**
    * Konuşmayı durdurma.
+   * Hem legacy P2P hem de swarm mode'da çalışır.
    */
   private handleStopConversation(clientId: string, ws: WebSocket): void {
     const conv = this.activeConversations.get(clientId);
-    if (conv) {
-      conv.running = false;
+    const swarmConv = this.activeConversations.get('__swarm__');
+
+    if (conv) conv.running = false;
+    if (swarmConv) swarmConv.running = false;
+
+    if (conv || swarmConv) {
       this.sendDashboard(ws, { type: 'conversation_stopping' });
+      // Swarm mode'da tüm peer'lara durdurma bildirimi
+      if (swarmConv && this.swarmManager?.hasSession) {
+        this.swarmManager.broadcastPayload('agent_message', {
+          content: '[Konuşma durduruldu]',
+          role: 'peer',
+          turn: 0,
+          maxTurns: 0,
+        });
+      }
     } else {
       this.sendDashboard(ws, { type: 'error', message: 'Aktif konuşma yok' });
     }
