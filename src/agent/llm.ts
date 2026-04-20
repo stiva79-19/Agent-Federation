@@ -277,6 +277,94 @@ export function getOpenClawAutoConfig(): { baseUrl: string; model: string; provi
 }
 
 /**
+ * LLM yapılandırma tanısı — apiKey eksikse nerede arandığını ve
+ * nasıl düzeltileceğini açıklayan human-readable bir rapor döner.
+ *
+ * Başta "kur bağlan çalış" akışında kullanıcıya ne eksik olduğunu
+ * erkenden göstermek için.
+ */
+export interface LLMConfigDiagnostic {
+  /** API key set edilmiş mi */
+  hasApiKey: boolean;
+  /** baseUrl set edilmiş mi */
+  hasBaseUrl: boolean;
+  /** model set edilmiş mi */
+  hasModel: boolean;
+  /** Key nereden geldi (veya gelmeye çalışıldı) */
+  apiKeySource: 'env' | 'openclaw' | 'missing';
+  /** OpenClaw provider adı (bilinirse) */
+  openclawProvider: string;
+  /** Çözülmüş baseUrl */
+  baseUrl: string;
+  /** Çözülmüş model */
+  model: string;
+  /** Sorun varsa okunabilir uyarı mesajı */
+  warnings: string[];
+  /** Kullanıcıya önerilen düzeltme adımları */
+  hints: string[];
+}
+
+/**
+ * Mevcut ortamdan LLM yapılandırmasını tanılar.
+ * Boş apiKey durumunu, OpenClaw workspace ile env var arasındaki
+ * çakışmaları ve missing provider file'larını yakalar.
+ */
+export function diagnoseLLMConfig(): LLMConfigDiagnostic {
+  const cfg = loadLLMConfig();
+  const openclaw = resolveOpenClawProvider();
+  const envKey = process.env['AGENT_LLM_API_KEY'];
+  const warnings: string[] = [];
+  const hints: string[] = [];
+
+  let apiKeySource: 'env' | 'openclaw' | 'missing';
+  if (envKey && envKey.length > 0) {
+    apiKeySource = 'env';
+  } else if (openclaw.apiKey.length > 0) {
+    apiKeySource = 'openclaw';
+  } else {
+    apiKeySource = 'missing';
+  }
+
+  const hasApiKey = cfg.apiKey.length > 0;
+  const hasBaseUrl = cfg.baseUrl.length > 0;
+  const hasModel = cfg.model.length > 0;
+
+  if (!hasApiKey) {
+    if (openclaw.providerName) {
+      warnings.push(
+        `OpenClaw workspace yuklendi (provider: ${openclaw.providerName}) ama API key bulunamadi.`,
+      );
+      hints.push(
+        `~/.openclaw/credentials/${openclaw.providerName}.json dosyasi olusturun: {"apiKey": "<sk-...>"}`,
+      );
+      hints.push(
+        `Alternatif: AGENT_LLM_API_KEY=<sk-...> npx tsx start-server.ts ... ile baslatin.`,
+      );
+    } else {
+      warnings.push('Hicbir yerden LLM API key cozulemedi.');
+      hints.push('~/.openclaw/workspace/ altinda OpenClaw kimligini olusturun veya');
+      hints.push('AGENT_LLM_API_KEY ve AGENT_LLM_BASE_URL env var\'larini set edin.');
+    }
+  }
+
+  if (!hasModel && hasApiKey) {
+    warnings.push('Model adi cozulemedi; varsayilana dusecek.');
+  }
+
+  return {
+    hasApiKey,
+    hasBaseUrl,
+    hasModel,
+    apiKeySource,
+    openclawProvider: openclaw.providerName,
+    baseUrl: cfg.baseUrl,
+    model: cfg.model,
+    warnings,
+    hints,
+  };
+}
+
+/**
  * LLM API Client.
  * OpenAI-uyumlu herhangi bir API ile çalışır (OpenAI, Anthropic proxy, Ollama, vb).
  */

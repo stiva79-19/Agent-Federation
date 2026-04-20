@@ -9,3 +9,8 @@ coverage/
 *.log
 .vscode/
 .idea/
+
+# Nested repository clones (e.g. OpenClaw fork kept side-by-side for PR work).
+# These should live outside the project or be properly gitignored to avoid
+# polluting parent git history.
+/openclaw/

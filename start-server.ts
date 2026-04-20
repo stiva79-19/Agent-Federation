@@ -31,7 +31,7 @@ import { WebSocketServerManager, defaultServerConfig } from './src/server/ws-ser
 import { RelayClient, defaultRelayUrl } from './src/client/relay-client';
 import { SwarmManager, defaultSwarmConfig } from './src/swarm/swarm-manager';
 import { loadOpenClawIdentity } from './src/agent/agent';
-import { loadLLMConfig } from './src/agent/llm';
+import { loadLLMConfig, diagnoseLLMConfig } from './src/agent/llm';
 import { auditLogger } from './src/server/audit-logger';
 
 // ─── CLI Argumanlari Parse ──────────────────────────────────────────────────
@@ -138,6 +138,21 @@ if (identity) {
 } else {
   console.log(`   Agent: ${process.env['AGENT_NAME'] || 'MrClaw'}`);
   console.log(`   OpenClaw: workspace bulunamadi (varsayilan ayarlar kullaniliyor)`);
+}
+
+// ─── LLM config tanisi — erken uyari ─────────────────────────────────────
+// Konusma baslatincaya kadar beklemeden, kullaniciya simdi soyle
+const llmDiag = diagnoseLLMConfig();
+if (llmDiag.warnings.length > 0) {
+  console.log('');
+  console.log('⚠️  LLM yapilandirma uyarisi:');
+  for (const w of llmDiag.warnings) console.log(`   ${w}`);
+  if (llmDiag.hints.length > 0) {
+    console.log('   Nasil duzeltirim:');
+    for (const h of llmDiag.hints) console.log(`     → ${h}`);
+  }
+  console.log('');
+  console.log('   Server yine de baslatiliyor. Konusma baslatmak icin key gerekli.');
 }
 
 const server = new WebSocketServerManager(config);

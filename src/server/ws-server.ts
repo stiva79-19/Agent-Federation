@@ -33,6 +33,7 @@ import { P2PManager } from './p2p';
 import { Agent, loadAgentConfig, loadOpenClawIdentity } from '../agent/agent';
 import type { OpenClawIdentity } from '../agent/agent';
 import type { LLMConfig } from '../agent/llm';
+import { diagnoseLLMConfig } from '../agent/llm';
 import { getOpenClawAutoConfig, loadLLMConfig } from '../agent/llm';
 import type { SwarmManager } from '../swarm/swarm-manager';
 import type { SwarmMessage } from '../swarm/protocol';
@@ -882,6 +883,18 @@ export class WebSocketServerManager extends EventEmitter {
         configured: agent.isLLMConfigured,
         source: llmAuto.hasApiKey ? 'openclaw' : (process.env['AGENT_LLM_API_KEY'] ? 'env' : 'manual'),
       },
+      llmDiagnostic: (() => {
+        const d = diagnoseLLMConfig();
+        return {
+          hasApiKey: d.hasApiKey,
+          apiKeySource: d.apiKeySource,
+          openclawProvider: d.openclawProvider,
+          baseUrl: d.baseUrl,
+          model: d.model,
+          warnings: d.warnings,
+          hints: d.hints,
+        };
+      })(),
       swarmEnabled: this.swarmManager !== null,
       swarmSessionInfo: this.swarmManager?.getSessionInfo() ?? null,
     });
