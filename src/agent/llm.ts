@@ -138,14 +138,29 @@ function resolveOpenClawProvider(): { baseUrl: string; apiKey: string; model: st
     if (!providerName) return empty;
 
     // 2) baseUrl + model'i oku
-    const modelsNode = (config['models'] as { providers?: Record<string, { baseUrl?: string; models?: Array<{ id?: string }> }> } | undefined);
+    const modelsNode = (config['models'] as {
+      providers?: Record<string, {
+        baseUrl?: string;
+        models?: Array<{ id?: string }>;
+        apiKey?: string;
+      }>;
+    } | undefined);
     const providerNode = modelsNode?.providers?.[providerName];
     const baseUrl = (providerNode?.baseUrl ?? '').replace(/\/+$/, '');
     const firstModel = providerNode?.models?.[0]?.id ?? '';
     if (!baseUrl || !firstModel) return empty;
 
-    // 3) API key'i credentials/ klasöründen oku
-    const apiKey = readCredential(workspace, providerName, fs, path);
+    // 3) API key'i oku — öncelik:
+    //    a) openclaw.json içinde models.providers.<name>.apiKey (OpenClaw'ın
+    //       gerçek kullandığı yer, inline storage)
+    //    b) ~/.openclaw/credentials/<name>.* dosyaları (legacy / alternatif)
+    //
+    // OpenClaw çoğunlukla (a)'yı kullanır; (b) sadece bazı kurulumlarda
+    // veya özel olarak dosyaya ayrılmış credential'lar için anlamlı.
+    const inlineKey = typeof providerNode?.apiKey === 'string' ? providerNode.apiKey : '';
+    const apiKey = inlineKey.length > 0
+      ? inlineKey
+      : readCredential(workspace, providerName, fs, path);
 
     return { baseUrl, apiKey, model: firstModel, providerName };
   } catch {
@@ -335,10 +350,13 @@ export function diagnoseLLMConfig(): LLMConfigDiagnostic {
         `OpenClaw workspace yuklendi (provider: ${openclaw.providerName}) ama API key bulunamadi.`,
       );
       hints.push(
-        `~/.openclaw/credentials/${openclaw.providerName}.json dosyasi olusturun: {"apiKey": "<sk-...>"}`,
+        `~/.openclaw/openclaw.json icinde models.providers.${openclaw.providerName}.apiKey alanini doldurun (OpenClaw'in standart yeri).`,
       );
       hints.push(
-        `Alternatif: AGENT_LLM_API_KEY=<sk-...> npx tsx start-server.ts ... ile baslatin.`,
+        `Alternatif: ~/.openclaw/credentials/${openclaw.providerName}.json dosyasina {"apiKey": "<sk-...>"} yazin.`,
+      );
+      hints.push(
+        `Hizli test: AGENT_LLM_API_KEY=<sk-...> npx tsx start-server.ts ... ile baslatin.`,
       );
     } else {
       warnings.push('Hicbir yerden LLM API key cozulemedi.');
