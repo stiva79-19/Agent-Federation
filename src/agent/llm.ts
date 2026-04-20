@@ -251,10 +251,15 @@ function extractJsonKey(content: string): string {
 export function loadLLMConfig(overrides?: Partial<LLMConfig>): LLMConfig {
   const openclaw = resolveOpenClawProvider();
 
+  const gatewayEnv = process.env['OPENCLAW_GATEWAY_URL'];
+  const gatewayUrl = gatewayEnv
+    ? gatewayEnv.replace(/\/+$/, '') + '/v1'
+    : '';
+
   const baseUrl =
     overrides?.baseUrl ??
     process.env['AGENT_LLM_BASE_URL'] ??
-    (openclaw.baseUrl || 'http://localhost:18789/v1');
+    (gatewayUrl || openclaw.baseUrl || 'http://localhost:18789/v1');
 
   const apiKey =
     overrides?.apiKey ??

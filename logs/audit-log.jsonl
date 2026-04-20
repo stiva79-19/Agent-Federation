@@ -1,1 +1,1 @@
-
+{"eventType":"message_blocked","agentDid":"did:claw:test:agent","details":{"reason":"injection_detected"},"severity":"medium","timestamp":"2026-04-20T18:18:18.087Z"}
