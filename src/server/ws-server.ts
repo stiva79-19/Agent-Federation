@@ -121,6 +121,12 @@ export class WebSocketServerManager extends EventEmitter {
   private clientSandboxSessions: Map<string, string> = new Map();
   /** Swarm manager (swarm mode'da set edilir) */
   private swarmManager: SwarmManager | null = null;
+  /**
+   * Swarm için background agent — dashboard bağlı olmasa bile
+   * gelen swarm mesajlarına yanıt üretir. İlk ihtiyaç olduğunda
+   * lazy-create edilir ve session boyunca korunur.
+   */
+  private swarmBackgroundAgent: Agent | null = null;
 
   constructor(config: ServerConfig & { networkConfig?: NetworkEgressConfig }) {
     super();
@@ -240,9 +246,35 @@ export class WebSocketServerManager extends EventEmitter {
   }
 
   /**
+   * Swarm konuşması için agent döndürür.
+   * Öncelik: ilk dashboard client'ın agent'ı (varsa görünürlük için).
+   * Fallback: background swarm agent (dashboard bağlı olmasa bile çalışır).
+   *
+   * Bu çok önemli — Frodo gibi bir peer'da dashboard kullanıcı tarafından
+   * açılmamış olabilir (headless relay), ama peer yine de gelen mesajlara
+   * LLM ile yanıt vermeli.
+   */
+  private getOrCreateSwarmAgent(): Agent | null {
+    // Dashboard varsa onun agent'ını kullan — dashboard UI'si ile tutarlı kalır
+    const firstClientId = this.dashboardClients.keys().next().value;
+    if (firstClientId) {
+      const agent = this.clientAgents.get(firstClientId);
+      if (agent) return agent;
+    }
+
+    // Dashboard yok — background agent'ı kullan (gerekirse oluştur)
+    if (!this.swarmBackgroundAgent) {
+      this.swarmBackgroundAgent = new Agent(loadAgentConfig());
+      console.log(`[WS Server] Background swarm agent created: ${this.swarmBackgroundAgent.name}`);
+    }
+    return this.swarmBackgroundAgent;
+  }
+
+  /**
    * Swarm'dan gelen agent_message'ı local agent ile işler ve yanıtı broadcast eder.
    *
-   * Model: Her peer bağımsız — kendi LLM'i ile yanıt verir.
+   * Model: Her peer bağımsız — kendi LLM'i ile yanıt verir. Dashboard bağlı
+   * olmak zorunda değil; headless peer'lar da katılabilir.
    * Aynı anda sadece bir local konuşma aktif olabilir (race prevention).
    */
   private async handleIncomingSwarmAgentMessage(_peerId: string, message: SwarmMessage): Promise<void> {
@@ -251,15 +283,20 @@ export class WebSocketServerManager extends EventEmitter {
     const payload = message.payload as { content?: string; role?: string; turn?: number; maxTurns?: number } | undefined;
     if (!payload?.content) return;
 
-    // İlk (host) dashboard client'ı ve agent'ı al — swarm mode'da tek local agent konuşuyor
-    const firstClientId = this.dashboardClients.keys().next().value;
-    if (!firstClientId) return;
-
-    const agent = this.clientAgents.get(firstClientId);
-    if (!agent || !agent.isLLMConfigured) {
-      console.warn('[WS Server] Swarm message received but local agent not configured');
+    const agent = this.getOrCreateSwarmAgent();
+    if (!agent) {
+      console.warn('[WS Server] Swarm message received but no agent available');
       return;
     }
+    if (!agent.isLLMConfigured) {
+      console.warn('[WS Server] Swarm message received but agent has no LLM config');
+      return;
+    }
+
+    console.log(`[WS Server] Swarm message received, processing with agent ${agent.name} (turn ${(payload.turn ?? 0) + 1})`);
+
+    // Opsiyonel dashboard client (eşzamanlı UI için)
+    const firstClientId = this.dashboardClients.keys().next().value;
 
     // Aktif konuşma yoksa başlat — swarm mode için tek state
     let convState = this.activeConversations.get('__swarm__');
@@ -292,8 +329,8 @@ export class WebSocketServerManager extends EventEmitter {
         turn,
       });
 
-      // Local dashboard'a da gönder
-      const clientWs = this.dashboardClients.get(firstClientId);
+      // Local dashboard'a da gönder (varsa)
+      const clientWs = firstClientId ? this.dashboardClients.get(firstClientId) : undefined;
       if (clientWs) {
         this.sendDashboard(clientWs, {
           type: 'agent_thinking',
