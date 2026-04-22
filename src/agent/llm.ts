@@ -240,6 +240,31 @@ function extractJsonKey(content: string): string {
 }
 
 /**
+ * Local-bound baseUrl tespiti. OpenClaw Gateway gibi localhost'ta çalışan
+ * servisler auth gerektirmediği için boş apiKey durumunda otomatik
+ * fallback yapılır.
+ */
+export function isLocalBaseUrl(url: string): boolean {
+  if (!url) return false;
+  try {
+    const h = new URL(url).hostname.toLowerCase();
+    return (
+      h === 'localhost' ||
+      h === '127.0.0.1' ||
+      h === '0.0.0.0' ||
+      h === '::1' ||
+      h.endsWith('.local') ||
+      h.endsWith('.localhost')
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Local baseUrl + boş apiKey için kullanılan sentinel — auth gerektirmeyen gateway'lere gönderilir. */
+export const LOCAL_API_KEY_SENTINEL = 'openclaw-local';
+
+/**
  * LLM yapılandırmasını üretir.
  *
  * Öncelik sırası (ilk bulunan kazanır):
@@ -247,6 +272,10 @@ function extractJsonKey(content: string): string {
  * 2. AGENT_LLM_* env var'ları (manuel kontrol için)
  * 3. OpenClaw workspace (otomatik: openclaw.json + credentials/)
  * 4. Varsayılanlar
+ *
+ * Auto-fallback: baseUrl localhost ise ve hiçbir kaynaktan apiKey çözülememişse,
+ * LOCAL_API_KEY_SENTINEL otomatik set edilir. OpenClaw Gateway gibi auth
+ * gerektirmeyen local servisler için "zero-config" deneyimi sağlar.
  */
 export function loadLLMConfig(overrides?: Partial<LLMConfig>): LLMConfig {
   const openclaw = resolveOpenClawProvider();
@@ -261,11 +290,18 @@ export function loadLLMConfig(overrides?: Partial<LLMConfig>): LLMConfig {
     process.env['AGENT_LLM_BASE_URL'] ??
     (gatewayUrl || openclaw.baseUrl || 'http://localhost:18789/v1');
 
-  const apiKey =
+  let apiKey =
     overrides?.apiKey ??
     process.env['AGENT_LLM_API_KEY'] ??
     openclaw.apiKey ??
     '';
+
+  // Auto-fallback: local gateway'e gidiyorsak boş apiKey'i sentinel ile doldur.
+  // Bu sayede agent.isLLMConfigured true olur ve peer-to-peer chat beklendiği
+  // gibi LLM üzerinden yanıt üretir.
+  if (apiKey.length === 0 && isLocalBaseUrl(baseUrl)) {
+    apiKey = LOCAL_API_KEY_SENTINEL;
+  }
 
   const model =
     overrides?.model ??
@@ -311,7 +347,7 @@ export interface LLMConfigDiagnostic {
   /** model set edilmiş mi */
   hasModel: boolean;
   /** Key nereden geldi (veya gelmeye çalışıldı) */
-  apiKeySource: 'env' | 'openclaw' | 'missing';
+  apiKeySource: 'env' | 'openclaw' | 'local-fallback' | 'missing';
   /** OpenClaw provider adı (bilinirse) */
   openclawProvider: string;
   /** Çözülmüş baseUrl */
@@ -336,11 +372,15 @@ export function diagnoseLLMConfig(): LLMConfigDiagnostic {
   const warnings: string[] = [];
   const hints: string[] = [];
 
-  let apiKeySource: 'env' | 'openclaw' | 'missing';
+  // cfg.apiKey auto-fallback sonrası LOCAL_API_KEY_SENTINEL olabilir — kaynak
+  // tespiti için ham değerlere bakıyoruz (env + openclaw).
+  let apiKeySource: 'env' | 'openclaw' | 'local-fallback' | 'missing';
   if (envKey && envKey.length > 0) {
     apiKeySource = 'env';
   } else if (openclaw.apiKey.length > 0) {
     apiKeySource = 'openclaw';
+  } else if (cfg.apiKey === LOCAL_API_KEY_SENTINEL && isLocalBaseUrl(cfg.baseUrl)) {
+    apiKeySource = 'local-fallback';
   } else {
     apiKeySource = 'missing';
   }
@@ -349,7 +389,15 @@ export function diagnoseLLMConfig(): LLMConfigDiagnostic {
   const hasBaseUrl = cfg.baseUrl.length > 0;
   const hasModel = cfg.model.length > 0;
 
-  if (!hasApiKey) {
+  if (apiKeySource === 'local-fallback') {
+    // Bilgilendirme amaçlı — hata değil. Local gateway auth beklemiyor.
+    hints.push(
+      `Local gateway tespit edildi (${cfg.baseUrl}); apiKey istenmiyor, sentinel kullanildi.`,
+    );
+    hints.push(
+      `Uzak bir LLM provider'a gecmek istersen AGENT_LLM_API_KEY env var'ini veya ~/.openclaw/openclaw.json icindeki apiKey alanini doldur.`,
+    );
+  } else if (!hasApiKey) {
     if (openclaw.providerName) {
       warnings.push(
         `OpenClaw workspace yuklendi (provider: ${openclaw.providerName}) ama API key bulunamadi.`,

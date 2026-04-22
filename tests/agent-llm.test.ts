@@ -25,13 +25,22 @@ describe('LLMClient', () => {
   });
 
   describe('LLMClient', () => {
-    it('reports not configured when no API key', () => {
-      const client = new LLMClient({ apiKey: '' });
+    // Remote (non-local) baseUrl — local-fallback devreye girmez, boş apiKey "not configured" kalır.
+    const REMOTE = 'https://api.example.com/v1';
+
+    it('reports not configured when no API key (remote baseUrl)', () => {
+      const client = new LLMClient({ apiKey: '', baseUrl: REMOTE });
       expect(client.isConfigured()).toBe(false);
     });
 
     it('reports configured when API key is set', () => {
       const client = new LLMClient({ apiKey: 'test-key' });
+      expect(client.isConfigured()).toBe(true);
+    });
+
+    it('auto-fills sentinel apiKey when baseUrl is local and apiKey empty', () => {
+      const client = new LLMClient({ apiKey: '', baseUrl: 'http://localhost:18789/v1' });
+      // Local gateway'ler auth istemediği için otomatik yapılandırılmış sayılır.
       expect(client.isConfigured()).toBe(true);
     });
 
@@ -48,8 +57,8 @@ describe('LLMClient', () => {
       expect(usage.completionTokens).toBe(0);
     });
 
-    it('throws on chat without API key', async () => {
-      const client = new LLMClient({ apiKey: '' });
+    it('throws on chat without API key (remote baseUrl)', async () => {
+      const client = new LLMClient({ apiKey: '', baseUrl: REMOTE });
       await expect(client.chat([{ role: 'user', content: 'hi' }]))
         .rejects.toThrow('API key');
     });
@@ -71,7 +80,9 @@ describe('Agent', () => {
       name: 'TestAgent',
       systemPrompt: 'You are a test agent.',
       maxTurns: 10,
-      llmConfig: { apiKey: '' }, // No real API key for unit tests
+      // Non-local baseUrl + empty apiKey → local-fallback devreye girmez,
+      // "not configured" davranışı korunur.
+      llmConfig: { apiKey: '', baseUrl: 'https://api.example.com/v1' },
     });
   });
 

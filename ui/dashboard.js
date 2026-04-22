@@ -317,7 +317,8 @@ function sendMessage() {
     });
   } else {
     // Swarm yoksa → LLM agent konuşma döngüsü başlat
-    send('start_conversation', { message: text });
+    // Server `task` alanı bekliyor (ws-server.ts:1141), `message` değil.
+    send('start_conversation', { task: text });
   }
 }
 
