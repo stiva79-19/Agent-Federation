@@ -18,6 +18,7 @@ export type SwarmMessageType =
   | 'agent_message'       // Agent'lar arası mesaj (LLM cevabı dahil)
   | 'agent_thinking'      // Agent düşünüyor bildirimi
   | 'agent_stream_chunk'  // Streaming mesaj parçası
+  | 'agent_llm_offline'   // Bu peer LLM'e ulaşamıyor; otomatik cevap vermeyecek (listener-only)
   | 'sandbox_action'      // Dosya işlemi isteği
   | 'sandbox_result'      // Dosya işlemi sonucu
   | 'approval_request'    // Onay isteği

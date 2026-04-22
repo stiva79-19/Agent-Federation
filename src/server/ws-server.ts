@@ -35,6 +35,10 @@ import type { OpenClawIdentity } from '../agent/agent';
 import type { LLMConfig } from '../agent/llm';
 import { diagnoseLLMConfig } from '../agent/llm';
 import { getOpenClawAutoConfig, loadLLMConfig } from '../agent/llm';
+import { checkGatewayStatus } from '../agent/gateway-status';
+import type { GatewayStatus } from '../agent/gateway-status';
+import { resolveOpenClawHome } from '../agent/openclaw-home';
+import type { OpenClawHomeResolution } from '../agent/openclaw-home';
 import type { SwarmManager } from '../swarm/swarm-manager';
 import type { SwarmMessage } from '../swarm/protocol';
 import { SandboxFS } from './sandbox-fs';
@@ -58,6 +62,55 @@ export { SandboxFS } from './sandbox-fs';
 export type { SandboxAction, SandboxActionType, SandboxFileInfo } from './sandbox-fs';
 export { ApprovalManager } from './approval';
 export type { ApprovalRequest, ApprovalMode } from './approval';
+
+// ─── Silent Peer Helpers (LLM reachability) ─────────────────────────────────
+
+/**
+ * Hata LLM'in erişilemez olduğunu mu işaret ediyor?
+ * ECONNREFUSED / ETIMEDOUT / ENOTFOUND / AbortError / "fetch failed" bunlar.
+ * Auth hatası (401/403) veya 400 bad request "real error" sayılır ve bu false döner.
+ */
+export function isLLMUnreachableError(err: unknown): boolean {
+  if (!err) return false;
+  const e = err as { code?: string; name?: string; message?: string; cause?: { code?: string; message?: string } };
+  const code = e.code || e.cause?.code || '';
+  const message = (e.message || '') + ' ' + (e.cause?.message || '');
+
+  const unreachableCodes = [
+    'ECONNREFUSED',
+    'ETIMEDOUT',
+    'ENOTFOUND',
+    'ENETUNREACH',
+    'EHOSTUNREACH',
+    'EAI_AGAIN',
+    'EPIPE',
+    'ECONNRESET',
+  ];
+  if (unreachableCodes.includes(code)) return true;
+
+  // Node 18+ fetch undici errors — cause.code'da kalır
+  if (e.name === 'AbortError') return true;
+  if (/fetch failed/i.test(message)) return true;
+  if (/network error/i.test(message)) return true;
+
+  return false;
+}
+
+/** Hata türünü makine-okunur bir label'a map'ler. */
+export function classifyLLMError(err: unknown): string {
+  if (!err) return 'unknown';
+  const e = err as { code?: string; cause?: { code?: string } };
+  return e.code || e.cause?.code || 'fetch-failed';
+}
+
+// ─── Types ──────────────────────────────────────────────────────────────────
+
+export interface LLMOfflineState {
+  offline: boolean;
+  reason: string;
+  detail: string;
+  since: string;
+}
 // Re-export new modules
 export { InvitationManager } from './invitations';
 export type { Invitation, InvitationStatus, CreateInvitationParams } from './invitations';
@@ -127,6 +180,26 @@ export class WebSocketServerManager extends EventEmitter {
    * lazy-create edilir ve session boyunca korunur.
    */
   private swarmBackgroundAgent: Agent | null = null;
+  /**
+   * LLM offline state — bu peer LLM'e ulaşamıyorsa true. Silent peer mode
+   * tetikleyici. Dashboard ve peer'lara bildirilir; swarm'a katılım devam eder
+   * ama otomatik cevap üretilmez.
+   */
+  private llmOffline: LLMOfflineState | null = null;
+  /**
+   * Peer'ların LLM offline durumları. notifyLlmOffline broadcast alındığında
+   * güncellenir — dashboard "şu peer cevap vermiyor" badge'i göstermek için kullanır.
+   */
+  private peerLlmOffline: Map<string, { reason: string; detail: string; since: string }> = new Map();
+  /**
+   * Son bilinen OpenClaw home çözümü — dashboard'a gönderilir, kullanıcı
+   * "klasörü değiştir" ile override ettiğinde güncellenir.
+   */
+  private openclawHome: OpenClawHomeResolution | null = null;
+  /** Son bilinen Gateway status — periyodik probe ile güncellenir. */
+  private gatewayStatus: GatewayStatus | null = null;
+  /** Periyodik gateway probe timer'ı (destroy'da temizlenir). */
+  private gatewayProbeTimer: NodeJS.Timeout | null = null;
 
   constructor(config: ServerConfig & { networkConfig?: NetworkEgressConfig }) {
     super();
@@ -235,6 +308,25 @@ export class WebSocketServerManager extends EventEmitter {
           console.error('[WS Server] Swarm agent message processing error:', err);
         });
       }
+
+      // agent_llm_offline — diğer peer "ben LLM offline'ım" diyor. Durumunu kaydet,
+      // dashboard'a "şu peer cevap vermiyor" bilgisi ilet.
+      if (message.type === 'agent_llm_offline') {
+        const payload = message.payload as { reason?: string; detail?: string } | undefined;
+        const reason = payload?.reason ?? 'unknown';
+        const detail = payload?.detail ?? 'Peer LLM offline';
+        const since = new Date().toISOString();
+        this.peerLlmOffline.set(peerId, { reason, detail, since });
+        this.broadcastToDashboard({
+          type: 'swarm_peer_llm_offline',
+          self: false,
+          peerId,
+          agentName: message.from.agentName,
+          reason,
+          detail,
+          since,
+        });
+      }
     });
 
     manager.on('error', (error: Error) => {
@@ -289,7 +381,10 @@ export class WebSocketServerManager extends EventEmitter {
       return;
     }
     if (!agent.isLLMConfigured) {
-      console.warn('[WS Server] Swarm message received but agent has no LLM config');
+      // Silent peer mode — LLM yok ama mesajı sessizce düşürmek yerine
+      // peer'lara "ben LLM offline'ım, cevap vermeyeceğim" bildirimi gönder
+      // ve dashboard'a (varsa) bilgi ver. Böylece konuşan peer beklemez.
+      this.notifyLlmOffline('no-llm-config', 'Agent LLM yapılandırılmamış');
       return;
     }
 
@@ -386,6 +481,17 @@ export class WebSocketServerManager extends EventEmitter {
         });
       }
     } catch (err) {
+      // LLM ulaşılamaz mı (offline gateway), yoksa gerçek LLM hatası mı?
+      // Ulaşılamıyorsa graceful — crash etme, peer'a bildir, listener-only kal.
+      if (isLLMUnreachableError(err)) {
+        console.warn(`[WS Server] Swarm LLM unreachable (${classifyLLMError(err)}); falling back to listener-only mode.`);
+        convState.running = false;
+        this.activeConversations.delete('__swarm__');
+        this.notifyLlmOffline(classifyLLMError(err), err instanceof Error ? err.message : 'LLM ulaşılamıyor');
+        return;
+      }
+
+      // Gerçek hata (örn. API auth, bad request, parse error) — eski davranış
       console.error('[WS Server] Swarm LLM error:', err);
       convState.running = false;
       this.activeConversations.delete('__swarm__');
@@ -393,6 +499,112 @@ export class WebSocketServerManager extends EventEmitter {
         type: 'conversation_error',
         error: err instanceof Error ? err.message : 'LLM hatası',
       });
+    }
+  }
+
+  /**
+   * Peer'lara "bu peer LLM offline" bildirimi yayar ve dashboard'a durumu iletir.
+   * Silent peer mode'un tetikleyicisi. Konuşan peer bunu görünce
+   * otomatik cevap beklemeyecek — insan manuel cevap yazabilir.
+   *
+   * @param reason - Makine-okunur sebep (ECONNREFUSED, timeout, no-llm-config vb.)
+   * @param detail - Kullanıcıya/peer'a gösterilecek human-readable açıklama
+   */
+  private notifyLlmOffline(reason: string, detail: string): void {
+    this.llmOffline = { offline: true, reason, detail, since: new Date().toISOString() };
+
+    // Swarm'a yay — diğer peer'lar bilsinler
+    if (this.swarmManager?.hasSession) {
+      try {
+        this.swarmManager.broadcastPayload('agent_llm_offline', { reason, detail });
+      } catch (e) {
+        console.warn('[WS Server] Failed to broadcast agent_llm_offline:', e);
+      }
+    }
+
+    // Dashboard'a yay — UI indicator güncellensin
+    this.broadcastToDashboard({
+      type: 'swarm_peer_llm_offline',
+      self: true,
+      reason,
+      detail,
+      since: this.llmOffline.since,
+    });
+  }
+
+  /**
+   * LLM tekrar erişilebilir olduğu tespit edildiğinde (veya yeniden configure
+   * edildiğinde) offline durumunu temizler ve ilgili taraflara bildirir.
+   */
+  private notifyLlmBackOnline(reason: string = 'recovered'): void {
+    if (!this.llmOffline?.offline) return;
+    this.llmOffline = { offline: false, reason, detail: 'LLM erişilebilir', since: new Date().toISOString() };
+    this.broadcastToDashboard({
+      type: 'swarm_peer_llm_online',
+      self: true,
+      reason,
+    });
+  }
+
+  /**
+   * OpenClaw home'u çözümler (cache'li). Dashboard'a welcome ile veya "klasörü
+   * değiştir" butonundan güncelleme gelince referans olarak kullanılır.
+   */
+  private ensureOpenClawHome(): OpenClawHomeResolution {
+    if (!this.openclawHome) {
+      this.openclawHome = resolveOpenClawHome();
+    }
+    return this.openclawHome;
+  }
+
+  /**
+   * Gateway'i probe eder ve cache'ler; sonucu dashboard'a broadcast eder.
+   * LLM reachability değiştiğinde notifyLlmOffline/notifyLlmBackOnline ile
+   * offline state'i de günceller.
+   */
+  private async triggerGatewayProbe(): Promise<void> {
+    const llmCfg = loadLLMConfig();
+    const status = await checkGatewayStatus(llmCfg.baseUrl);
+    this.gatewayStatus = status;
+
+    this.broadcastToDashboard({
+      type: 'gateway_status',
+      status,
+    });
+
+    // Gateway durumu LLM reachability'sini otomatik etkiler:
+    // - Offline → llmOffline state'i set et (silent peer mode)
+    // - Running → önceden offline ise online'a geç
+    if (status.health === 'offline' || status.health === 'unreachable') {
+      if (!this.llmOffline?.offline) {
+        this.notifyLlmOffline('gateway-' + status.health, status.summary);
+      }
+    } else if (status.health === 'running') {
+      this.notifyLlmBackOnline('gateway-running');
+    }
+  }
+
+  /**
+   * Periyodik gateway probe timer'ını başlatır. Dashboard bağlı olsun ya da olmasın
+   * arka planda durumu canlı tutar, reconnect durumlarını yakalar.
+   */
+  private startGatewayProbeLoop(intervalMs: number = 30_000): void {
+    if (this.gatewayProbeTimer) return;
+    // İlk probe hemen, sonrası interval
+    this.triggerGatewayProbe().catch(() => { /* ignore */ });
+    this.gatewayProbeTimer = setInterval(() => {
+      this.triggerGatewayProbe().catch(() => { /* ignore */ });
+    }, intervalMs);
+    // Node event loop'u bu timer için ayakta tutmasın
+    if (typeof this.gatewayProbeTimer.unref === 'function') {
+      this.gatewayProbeTimer.unref();
+    }
+  }
+
+  private stopGatewayProbeLoop(): void {
+    if (this.gatewayProbeTimer) {
+      clearInterval(this.gatewayProbeTimer);
+      this.gatewayProbeTimer = null;
     }
   }
 
@@ -840,6 +1052,7 @@ export class WebSocketServerManager extends EventEmitter {
         httpServer.listen(this.config.port, host, () => {
           console.log(`[WS Server] Listening on port ${this.config.port} (HTTP + WebSocket)`);
           this.startHeartbeat();
+          this.startGatewayProbeLoop();
           this.invitationManager.startCleanup();
           this.sessionManager.startCleanup();
           this.p2pManager.startCleanup();
@@ -934,6 +1147,15 @@ export class WebSocketServerManager extends EventEmitter {
       })(),
       swarmEnabled: this.swarmManager !== null,
       swarmSessionInfo: this.swarmManager?.getSessionInfo() ?? null,
+      // OpenClaw home çözümü + Gateway son bilinen status — client hemen UI'ı çizebilsin
+      openclawHome: this.ensureOpenClawHome(),
+      gatewayStatus: this.gatewayStatus ?? null,
+      llmOffline: this.llmOffline,
+    });
+
+    // Arka planda Gateway'i probe et, sonuç dönünce push — UI hızlıca yenilensin
+    this.triggerGatewayProbe().catch((err) => {
+      console.warn('[WS Server] Initial gateway probe failed:', err);
     });
 
     ws.on('message', (data: RawData) => {
@@ -1047,6 +1269,24 @@ export class WebSocketServerManager extends EventEmitter {
         break;
       case 'swarm_broadcast':
         this.handleSwarmBroadcast(clientId, ws, message);
+        break;
+      // ─── OpenClaw Home + Gateway Handlers ──────────────────────────
+      case 'set_openclaw_home':
+        this.handleSetOpenClawHome(ws, message);
+        break;
+      case 'retry_gateway':
+        this.handleRetryGateway(ws);
+        break;
+      case 'start_gateway':
+        this.handleStartGateway(ws);
+        break;
+      case 'get_openclaw_home_status':
+        this.sendDashboard(ws, { type: 'openclaw_home_status', home: this.ensureOpenClawHome() });
+        break;
+      case 'get_gateway_status':
+        this.sendDashboard(ws, { type: 'gateway_status', status: this.gatewayStatus });
+        // Arka planda taze probe tetikle, sonucu broadcast eder
+        this.triggerGatewayProbe().catch(() => { /* ignore */ });
         break;
       default:
         this.sendDashboard(ws, { type: 'error', message: `Bilinmeyen mesaj tipi: ${msgType}` });
@@ -1604,6 +1844,123 @@ export class WebSocketServerManager extends EventEmitter {
     );
   }
 
+  // ─── OpenClaw Home + Gateway Dashboard Handlers ─────────────────────────
+
+  /**
+   * Kullanıcının seçtiği OpenClaw home path'ini persist eder ve LLM config'i
+   * yeniden çözümler. First-run wizard veya "klasörü değiştir" butonundan gelir.
+   */
+  private handleSetOpenClawHome(ws: WebSocket, message: Record<string, unknown>): void {
+    const pathValue = message['path'] as string | undefined;
+    if (!pathValue || pathValue.length === 0) {
+      this.sendDashboard(ws, { type: 'error', message: 'path alanı gerekli' });
+      return;
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { setOpenClawHome } = require('../agent/openclaw-home') as typeof import('../agent/openclaw-home');
+    const resolution = setOpenClawHome(pathValue);
+
+    if (!resolution.resolved) {
+      this.sendDashboard(ws, {
+        type: 'openclaw_home_status',
+        home: resolution,
+        error: 'Seçilen klasör OpenClaw home olarak tanınmadı (openclaw.json veya workspace/ bulunamadı).',
+      });
+      return;
+    }
+
+    this.openclawHome = resolution;
+
+    // Yeni home ile LLM config'i yenile — tüm client agent'ları güncellensin
+    const llmCfg = loadLLMConfig();
+    for (const agent of this.clientAgents.values()) {
+      agent.updateLLMConfig({ baseUrl: llmCfg.baseUrl, apiKey: llmCfg.apiKey, model: llmCfg.model });
+    }
+    if (this.swarmBackgroundAgent) {
+      this.swarmBackgroundAgent.updateLLMConfig({ baseUrl: llmCfg.baseUrl, apiKey: llmCfg.apiKey, model: llmCfg.model });
+    }
+
+    this.broadcastToDashboard({ type: 'openclaw_home_status', home: resolution });
+
+    // Yeni home'daki gateway'i de probe et
+    this.triggerGatewayProbe().catch(() => { /* ignore */ });
+  }
+
+  /** Gateway'i yeniden probe etmek için dashboard butonu. */
+  private handleRetryGateway(ws: WebSocket): void {
+    this.triggerGatewayProbe()
+      .then(() => this.sendDashboard(ws, { type: 'gateway_status', status: this.gatewayStatus }))
+      .catch((err) => this.sendDashboard(ws, {
+        type: 'error',
+        message: `Gateway probe hatası: ${err instanceof Error ? err.message : 'unknown'}`,
+      }));
+  }
+
+  /**
+   * Gateway'i child process olarak başlatır ve stdout'u dashboard'a stream'ler.
+   * `openclaw gateway` komutunu spawn eder; PATH'te yoksa kullanıcıya hint gönderir.
+   */
+  private handleStartGateway(ws: WebSocket): void {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { spawn } = require('child_process') as typeof import('child_process');
+
+    try {
+      const proc = spawn('openclaw', ['gateway'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        shell: process.platform === 'win32',
+        // Parent process'ten bağımsız — biz kapansak bile gateway yaşamaya devam etsin
+        detached: true,
+      });
+
+      let started = false;
+      const forward = (stream: 'stdout' | 'stderr') => (data: Buffer) => {
+        const line = data.toString();
+        this.broadcastToDashboard({
+          type: 'gateway_log',
+          stream,
+          line,
+        });
+        // Gateway "Listening on" benzeri bir log atarsa probe tetikleyelim
+        if (!started && /listening|ready|started/i.test(line)) {
+          started = true;
+          setTimeout(() => { this.triggerGatewayProbe().catch(() => { /* ignore */ }); }, 500);
+        }
+      };
+
+      proc.stdout?.on('data', forward('stdout'));
+      proc.stderr?.on('data', forward('stderr'));
+
+      proc.on('error', (err) => {
+        const msg = err.message.includes('ENOENT')
+          ? `'openclaw' komutu PATH'te bulunamadı. OpenClaw CLI kurulu mu? (brew/npm/installer ile kurun)`
+          : `Gateway başlatılamadı: ${err.message}`;
+        this.sendDashboard(ws, { type: 'gateway_start_failed', error: msg });
+      });
+
+      proc.on('exit', (code, signal) => {
+        this.broadcastToDashboard({
+          type: 'gateway_exited',
+          code,
+          signal,
+        });
+      });
+
+      // Parent process'ten decouple
+      proc.unref();
+
+      this.sendDashboard(ws, { type: 'gateway_start_initiated' });
+
+      // 3 saniye sonra ilk probe — gateway boot etmiş olmalı
+      setTimeout(() => { this.triggerGatewayProbe().catch(() => { /* ignore */ }); }, 3000);
+    } catch (err) {
+      this.sendDashboard(ws, {
+        type: 'gateway_start_failed',
+        error: err instanceof Error ? err.message : 'Spawn hatası',
+      });
+    }
+  }
+
   // ─── Sandbox & Approval Handlers ─────────────────────────────────────────
 
   /**
@@ -2008,6 +2365,7 @@ export class WebSocketServerManager extends EventEmitter {
    */
   stop(): void {
     this.stopHeartbeat();
+    this.stopGatewayProbeLoop();
     this.invitationManager.stopCleanup();
     this.sessionManager.stopCleanup();
     this.sessionManager.endAll();
