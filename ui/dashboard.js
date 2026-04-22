@@ -151,31 +151,29 @@ function handleWelcome(msg) {
 // --- Session Created ---
 function handleSessionCreated(msg) {
   sessionActive = true;
-  currentTorrentKey = msg.torrentKey || msg.sessionId || '';
-  $('torrentKeyBox').style.display = 'flex';
-  $('torrentKeyValue').textContent = currentTorrentKey;
-  $('infoSessionId').textContent = (msg.sessionId || '').substring(0, 12) + '...';
+  currentTorrentKey = msg.sessionKey || msg.torrentKey || msg.sessionId || '';
+  showTorrentKey(currentTorrentKey);
+  $('infoSessionId').textContent = currentTorrentKey ? currentTorrentKey.substring(0, 12) + '...' : '—';
   $('btnCreateSession').style.display = 'none';
   $('btnJoinSession').style.display = 'none';
   $('btnLeaveSession').style.display = 'block';
   startTimer();
   updatePeerList(msg.peers || []);
-  addSystemMessage('Session created');
+  addSystemMessage('Session created — key: ' + currentTorrentKey.substring(0, 16) + '...');
 }
 
 // --- Session Joined ---
 function handleSessionJoined(msg) {
   sessionActive = true;
-  currentTorrentKey = msg.torrentKey || msg.sessionId || '';
-  $('torrentKeyBox').style.display = 'flex';
-  $('torrentKeyValue').textContent = currentTorrentKey;
-  $('infoSessionId').textContent = (msg.sessionId || '').substring(0, 12) + '...';
+  currentTorrentKey = msg.sessionKey || msg.torrentKey || msg.sessionId || '';
+  showTorrentKey(currentTorrentKey);
+  $('infoSessionId').textContent = currentTorrentKey ? currentTorrentKey.substring(0, 12) + '...' : '—';
   $('btnCreateSession').style.display = 'none';
   $('btnJoinSession').style.display = 'none';
   $('btnLeaveSession').style.display = 'block';
   startTimer();
   updatePeerList(msg.peers || []);
-  addSystemMessage('Joined session');
+  addSystemMessage('Joined session — key: ' + currentTorrentKey.substring(0, 16) + '...');
 }
 
 // --- Peer Events ---
@@ -257,7 +255,7 @@ function createSession() {
 function joinSession() {
   const key = prompt('Enter torrent key or session ID:');
   if (key && key.trim()) {
-    send('swarm_join_session', { torrentKey: key.trim() });
+    send('swarm_join_session', { sessionKey: key.trim() });
   }
 }
 
@@ -452,14 +450,43 @@ function renderFileTree(files) {
   }).join('');
 }
 
+// --- Torrent Key Display ---
+function showTorrentKey(key) {
+  const box = $('torrentKeyBox');
+  const value = $('torrentKeyValue');
+  if (key) {
+    box.style.display = 'flex';
+    value.textContent = key;
+    // Auto-select for quick copy
+    if (window.getSelection) {
+      const range = document.createRange();
+      range.selectNodeContents(value);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+  } else {
+    box.style.display = 'none';
+    value.textContent = '—';
+  }
+}
+
 // --- Torrent Key Copy ---
 function copyTorrentKey() {
   if (!currentTorrentKey) return;
   navigator.clipboard.writeText(currentTorrentKey).then(() => {
     const btn = document.querySelector('.copy-btn');
     const orig = btn.textContent;
-    btn.textContent = '✅';
-    setTimeout(() => { btn.textContent = orig; }, 1500);
+    btn.textContent = 'Kopyalandı!';
+    btn.style.background = 'var(--success)';
+    btn.style.borderColor = 'var(--success)';
+    btn.style.color = '#fff';
+    setTimeout(() => {
+      btn.textContent = orig;
+      btn.style.background = '';
+      btn.style.borderColor = '';
+      btn.style.color = '';
+    }, 1500);
   }).catch(() => {
     // Fallback
     const ta = document.createElement('textarea');
