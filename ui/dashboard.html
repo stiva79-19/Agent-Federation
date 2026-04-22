@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Federation Dashboard</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg-primary: #0a0e17;
+      --bg-secondary: #0f1520;
+      --bg-tertiary: #151c2c;
+      --bg-glass: rgba(15, 21, 32, 0.75);
+      --border-glass: rgba(14, 165, 233, 0.15);
+      --accent-blue: #0ea5e9;
+      --accent-blue-dim: rgba(14, 165, 233, 0.15);
+      --accent-orange: #f97316;
+      --accent-orange-dim: rgba(249, 115, 22, 0.15);
+      --text-primary: #e2e8f0;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --success: #22c55e;
+      --danger: #ef4444;
+      --warning: #eab308;
+      --radius: 10px;
+      --font-sans: 'Inter', system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* === HEADER === */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 20px;
+      background: var(--bg-glass);
+      backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--border-glass);
+      flex-shrink: 0;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .logo {
+      font-size: 20px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .logo-icon { font-size: 24px; }
+
+    .agent-name {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      color: var(--accent-blue);
+      background: var(--accent-blue-dim);
+      padding: 4px 10px;
+      border-radius: 6px;
+    }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .connection-status {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--danger);
+      transition: background 0.3s;
+    }
+
+    .status-dot.connected { background: var(--success); box-shadow: 0 0 8px rgba(34, 197, 94, 0.5); }
+    .status-dot.connecting { background: var(--warning); animation: pulse 1s infinite; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    .agent-counter {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      color: var(--accent-orange);
+      background: var(--accent-orange-dim);
+      padding: 4px 10px;
+      border-radius: 6px;
+    }
+
+    /* === MAIN LAYOUT === */
+    .main {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* === LEFT PANEL === */
+    .panel-left {
+      width: 280px;
+      background: var(--bg-secondary);
+      border-right: 1px solid var(--border-glass);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+    }
+
+    .panel-section {
+      padding: 16px;
+      border-bottom: 1px solid var(--border-glass);
+    }
+
+    .panel-section-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      margin-bottom: 10px;
+    }
+
+    .btn {
+      display: block;
+      width: 100%;
+      padding: 10px 14px;
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius);
+      background: var(--bg-tertiary);
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+      text-align: center;
+    }
+
+    .btn:hover { background: var(--accent-blue-dim); border-color: var(--accent-blue); }
+    .btn-primary { background: var(--accent-blue); border-color: var(--accent-blue); color: #fff; }
+    .btn-primary:hover { background: #0284c7; }
+    .btn-danger { border-color: var(--danger); color: var(--danger); }
+    .btn-danger:hover { background: rgba(239, 68, 68, 0.15); }
+
+    .btn-group { display: flex; flex-direction: column; gap: 8px; }
+
+    .torrent-key-box {
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius);
+      padding: 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .torrent-key-value {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--accent-blue);
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .copy-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 14px;
+      padding: 2px;
+      transition: color 0.2s;
+    }
+
+    .copy-btn:hover { color: var(--accent-blue); }
+
+    .peer-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      flex: 1;
+      overflow-y: auto;
+    }
+
+    .peer-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: var(--bg-tertiary);
+      font-size: 13px;
+    }
+
+    .peer-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--success);
+      flex-shrink: 0;
+    }
+
+    .peer-name {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-secondary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* === CENTER PANEL === */
+    .panel-center {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+
+    .tabs {
+      display: flex;
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border-glass);
+      flex-shrink: 0;
+    }
+
+    .tab {
+      padding: 10px 20px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-muted);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: all 0.2s;
+    }
+
+    .tab:hover { color: var(--text-secondary); }
+    .tab.active { color: var(--accent-blue); border-bottom-color: var(--accent-blue); }
+
+    .tab-content {
+      flex: 1;
+      display: none;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .tab-content.active { display: flex; }
+
+    /* Chat */
+    .chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .chat-msg {
+      max-width: 80%;
+      padding: 10px 14px;
+      border-radius: var(--radius);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .chat-msg.user {
+      align-self: flex-end;
+      background: var(--accent-blue);
+      color: #fff;
+    }
+
+    .chat-msg.agent {
+      align-self: flex-start;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border-glass);
+    }
+
+    .chat-msg.system {
+      align-self: center;
+      background: var(--accent-orange-dim);
+      color: var(--accent-orange);
+      font-size: 12px;
+      font-style: italic;
+    }
+
+    .chat-msg .msg-sender {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--accent-blue);
+      margin-bottom: 4px;
+    }
+
+    .chat-msg .msg-text { white-space: pre-wrap; word-break: break-word; }
+
+    .chat-msg .thinking {
+      color: var(--text-muted);
+      font-style: italic;
+      font-size: 12px;
+    }
+
+    .chat-input-area {
+      display: flex;
+      gap: 8px;
+      padding: 12px 16px;
+      background: var(--bg-secondary);
+      border-top: 1px solid var(--border-glass);
+      flex-shrink: 0;
+    }
+
+    .chat-input {
+      flex: 1;
+      padding: 10px 14px;
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius);
+      background: var(--bg-tertiary);
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    .chat-input:focus { border-color: var(--accent-blue); }
+
+    .chat-input::placeholder { color: var(--text-muted); }
+
+    /* Sandbox */
+    .sandbox-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+    }
+
+    .file-tree {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .file-tree-item {
+      padding: 4px 8px;
+      border-radius: 4px;
+      cursor: default;
+    }
+
+    .file-tree-item:hover { background: var(--bg-tertiary); }
+
+    .approval-card {
+      background: var(--bg-tertiary);
+      border: 1px solid var(--accent-orange-dim);
+      border-left: 3px solid var(--accent-orange);
+      border-radius: var(--radius);
+      padding: 12px;
+      margin-bottom: 10px;
+    }
+
+    .approval-card-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--accent-orange);
+      margin-bottom: 6px;
+    }
+
+    .approval-card-detail {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-secondary);
+      margin-bottom: 10px;
+      white-space: pre-wrap;
+    }
+
+    .approval-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .approval-actions .btn { width: auto; padding: 6px 16px; font-size: 12px; }
+
+    /* === RIGHT PANEL === */
+    .panel-right {
+      width: 300px;
+      background: var(--bg-secondary);
+      border-left: 1px solid var(--border-glass);
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+      flex-shrink: 0;
+    }
+
+    .info-card {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border-glass);
+    }
+
+    .info-card-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 4px 0;
+      font-size: 12px;
+    }
+
+    .info-row .label { color: var(--text-muted); }
+    .info-row .value { color: var(--text-secondary); font-family: var(--font-mono); font-size: 11px; }
+
+    .toggle-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 0;
+    }
+
+    .toggle-label { font-size: 13px; color: var(--text-secondary); }
+
+    .toggle-switch {
+      position: relative;
+      width: 40px;
+      height: 22px;
+      cursor: pointer;
+    }
+
+    .toggle-switch input { display: none; }
+
+    .toggle-slider {
+      position: absolute;
+      inset: 0;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border-glass);
+      border-radius: 11px;
+      transition: all 0.3s;
+    }
+
+    .toggle-slider::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 16px;
+      height: 16px;
+      background: var(--text-muted);
+      border-radius: 50%;
+      transition: all 0.3s;
+    }
+
+    .toggle-switch input:checked + .toggle-slider {
+      background: var(--accent-blue);
+      border-color: var(--accent-blue);
+    }
+
+    .toggle-switch input:checked + .toggle-slider::after {
+      left: 20px;
+      background: #fff;
+    }
+
+    .session-timer {
+      font-family: var(--font-mono);
+      font-size: 18px;
+      color: var(--accent-blue);
+      text-align: center;
+      padding: 8px 0;
+    }
+
+    .approval-queue {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .settings-group {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .settings-input {
+      padding: 8px 10px;
+      border: 1px solid var(--border-glass);
+      border-radius: 8px;
+      background: var(--bg-tertiary);
+      color: var(--text-primary);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      outline: none;
+    }
+
+    .settings-input:focus { border-color: var(--accent-blue); }
+
+    .empty-state {
+      text-align: center;
+      padding: 24px 16px;
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--bg-tertiary); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+    /* Responsive */
+    @media (max-width: 1024px) {
+      .panel-left { width: 220px; }
+      .panel-right { width: 240px; }
+    }
+
+    @media (max-width: 768px) {
+      .main { flex-direction: column; }
+      .panel-left, .panel-right { width: 100%; border: none; border-bottom: 1px solid var(--border-glass); max-height: 200px; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- HEADER -->
+  <header class="header">
+    <div class="header-left">
+      <div class="logo">
+        <span class="logo-icon">🦀</span>
+        <span>Agent Federation</span>
+      </div>
+      <span class="agent-name" id="agentNameBadge">agent-001</span>
+    </div>
+    <div class="header-right">
+      <div class="connection-status">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="statusText">Disconnected</span>
+      </div>
+      <span class="agent-counter" id="agentCounter">0/0</span>
+    </div>
+  </header>
+
+  <!-- MAIN -->
+  <div class="main">
+
+    <!-- LEFT PANEL -->
+    <aside class="panel-left">
+      <div class="panel-section">
+        <div class="panel-section-title">Session</div>
+        <div class="btn-group">
+          <button class="btn btn-primary" id="btnCreateSession" onclick="createSession()">Create Session</button>
+          <button class="btn" id="btnJoinSession" onclick="joinSession()">Join Session</button>
+          <button class="btn btn-danger" id="btnLeaveSession" onclick="leaveSession()" style="display:none;">Leave Session</button>
+        </div>
+        <div class="torrent-key-box" id="torrentKeyBox" style="display:none;">
+          <span class="torrent-key-value" id="torrentKeyValue">—</span>
+          <button class="copy-btn" onclick="copyTorrentKey()" title="Copy key">📋</button>
+        </div>
+      </div>
+
+      <div class="panel-section" style="flex:1; display:flex; flex-direction:column;">
+        <div class="panel-section-title">Peers</div>
+        <ul class="peer-list" id="peerList">
+          <li class="empty-state">No peers connected</li>
+        </ul>
+      </div>
+    </aside>
+
+    <!-- CENTER PANEL -->
+    <main class="panel-center">
+      <div class="tabs">
+        <div class="tab active" data-tab="chat" onclick="switchTab('chat')">Chat</div>
+        <div class="tab" data-tab="sandbox" onclick="switchTab('sandbox')">Sandbox</div>
+      </div>
+
+      <!-- Chat Tab -->
+      <div class="tab-content active" id="tabChat">
+        <div class="chat-messages" id="chatMessages">
+          <div class="empty-state">Start a conversation or join a session.</div>
+        </div>
+        <div class="chat-input-area">
+          <input class="chat-input" id="chatInput" type="text" placeholder="Type a message..." onkeydown="if(event.key==='Enter')sendMessage()">
+          <button class="btn btn-primary" style="width:auto;padding:10px 20px;" onclick="sendMessage()">Send</button>
+        </div>
+      </div>
+
+      <!-- Sandbox Tab -->
+      <div class="tab-content" id="tabSandbox">
+        <div class="sandbox-content">
+          <div class="panel-section-title" style="padding:0 0 10px;">File Tree</div>
+          <div class="file-tree" id="fileTree">
+            <div class="empty-state">No sandbox files yet.</div>
+          </div>
+          <div class="panel-section-title" style="padding:16px 0 10px;">Pending Approvals</div>
+          <div id="sandboxApprovals">
+            <div class="empty-state">No pending approvals.</div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- RIGHT PANEL -->
+    <aside class="panel-right">
+      <div class="info-card">
+        <div class="info-card-title">Agent Identity</div>
+        <div class="info-row"><span class="label">Name</span><span class="value" id="infoAgentName">—</span></div>
+        <div class="info-row"><span class="label">Model</span><span class="value" id="infoAgentModel">—</span></div>
+        <div class="info-row"><span class="label">Provider</span><span class="value" id="infoAgentProvider">—</span></div>
+      </div>
+
+      <div class="info-card">
+        <div class="info-card-title">Session Info</div>
+        <div class="info-row"><span class="label">Session ID</span><span class="value" id="infoSessionId">—</span></div>
+        <div class="info-row"><span class="label">Peers</span><span class="value" id="infoSessionPeers">0</span></div>
+        <div class="session-timer" id="sessionTimer">00:00:00</div>
+      </div>
+
+      <div class="info-card">
+        <div class="info-card-title">Approval Queue</div>
+        <div class="approval-queue" id="approvalQueue">
+          <div class="empty-state">No pending approvals</div>
+        </div>
+      </div>
+
+      <div class="info-card">
+        <div class="info-card-title">Settings</div>
+        <div class="toggle-row">
+          <span class="toggle-label">Allow All</span>
+          <label class="toggle-switch">
+            <input type="checkbox" id="toggleAllowAll" onchange="toggleAllowAll(this.checked)">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="settings-group" style="margin-top:8px;">
+          <label style="font-size:11px;color:var(--text-muted);">Agent Name</label>
+          <input class="settings-input" id="settingsAgentName" placeholder="agent-001" onchange="updateAgent()">
+        </div>
+        <div class="settings-group" style="margin-top:8px;">
+          <label style="font-size:11px;color:var(--text-muted);">LLM Model</label>
+          <input class="settings-input" id="settingsLlmModel" placeholder="claude-sonnet-4-20250514" onchange="updateLlm()">
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <script src="dashboard.js"></script>
+</body>
+</html>
