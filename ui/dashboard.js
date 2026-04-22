@@ -386,19 +386,31 @@ function handleGatewayStartFailed(msg) {
   openGatewaySetupModal();
 }
 
+// Son görülen offline key'i (self/peerId + reason) — aynısını iki kez yazdırmamak için
+let lastLlmOfflineKey = null;
+
 function handleSwarmPeerLlmOffline(msg) {
   const chip = $('chipLlm');
   const valueEl = $('chipLlmValue');
   chip.classList.remove('status-ok', 'status-warn', 'status-unknown');
   chip.classList.add('status-bad');
+
+  const key = (msg.self ? 'self' : (msg.peerId || 'peer')) + ':' + (msg.reason || 'unknown');
+  const isDuplicate = lastLlmOfflineKey === key;
+  lastLlmOfflineKey = key;
+
   if (msg.self) {
     valueEl.textContent = `offline (${msg.reason || 'unknown'})`;
     chip.title = msg.detail || 'LLM offline — listener-only mode';
-    addSystemMessage(`This peer is now in listener-only mode (${msg.reason || 'unknown'}) — incoming messages still shown, but no auto-responses.`);
+    if (!isDuplicate) {
+      addSystemMessage(`This peer is now in listener-only mode (${msg.reason || 'unknown'}) — incoming messages still shown, but no auto-responses.`);
+    }
   } else {
     valueEl.textContent = `peer offline: ${msg.agentName || msg.peerId || 'unknown'}`;
     chip.title = `${msg.agentName || msg.peerId} is in listener-only mode: ${msg.detail}`;
-    addSystemMessage(`Peer ${msg.agentName || msg.peerId || 'unknown'} is in listener-only mode (${msg.reason || 'unknown'}).`);
+    if (!isDuplicate) {
+      addSystemMessage(`Peer ${msg.agentName || msg.peerId || 'unknown'} is in listener-only mode (${msg.reason || 'unknown'}).`);
+    }
   }
 }
 
@@ -410,7 +422,11 @@ function handleSwarmPeerLlmOnline(msg) {
   chip.classList.add('status-ok');
   valueEl.textContent = 'ready';
   chip.title = 'LLM reachable';
-  addSystemMessage('LLM back online — auto-responses enabled.');
+  // Sadece önce offline idiysek recovery mesajı göster — spam önlemek için
+  if (lastLlmOfflineKey !== null) {
+    addSystemMessage('LLM back online — auto-responses enabled.');
+    lastLlmOfflineKey = null;
+  }
 }
 
 // --- Modal + action helpers ---

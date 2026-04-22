@@ -511,6 +511,12 @@ export class WebSocketServerManager extends EventEmitter {
    * @param detail - Kullanıcıya/peer'a gösterilecek human-readable açıklama
    */
   private notifyLlmOffline(reason: string, detail: string): void {
+    // Idempotent: aynı reason ile zaten offline'sak tekrar broadcast etme.
+    // Bu UI'da "listener-only mode" mesajının duplicate gözükmesini önler.
+    if (this.llmOffline?.offline && this.llmOffline.reason === reason) {
+      return;
+    }
+
     this.llmOffline = { offline: true, reason, detail, since: new Date().toISOString() };
 
     // Swarm'a yay — diğer peer'lar bilsinler
