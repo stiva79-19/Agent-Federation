@@ -251,18 +251,18 @@ function handleError(msg) {
 // ============================================================
 
 function createSession() {
-  send('create_swarm_session');
+  send('swarm_create_session');
 }
 
 function joinSession() {
   const key = prompt('Enter torrent key or session ID:');
   if (key && key.trim()) {
-    send('join_swarm_session', { torrentKey: key.trim() });
+    send('swarm_join_session', { torrentKey: key.trim() });
   }
 }
 
 function leaveSession() {
-  send('leave_swarm_session');
+  send('swarm_leave_session');
   sessionActive = false;
   currentTorrentKey = '';
   $('torrentKeyBox').style.display = 'none';
