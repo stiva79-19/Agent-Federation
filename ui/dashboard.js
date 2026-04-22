@@ -131,6 +131,30 @@ function handleMessage(msg) {
     case 'swarm_message':
       handleSwarmMessage(msg);
       break;
+    case 'openclaw_home_status':
+      handleOpenClawHomeStatus(msg);
+      break;
+    case 'gateway_status':
+      handleGatewayStatus(msg);
+      break;
+    case 'gateway_log':
+      handleGatewayLog(msg);
+      break;
+    case 'gateway_start_initiated':
+      addSystemMessage('Gateway start requested — streaming logs…');
+      break;
+    case 'gateway_start_failed':
+      handleGatewayStartFailed(msg);
+      break;
+    case 'gateway_exited':
+      addSystemMessage(`Gateway exited (code=${msg.code ?? '-'}${msg.signal ? `, signal=${msg.signal}` : ''})`);
+      break;
+    case 'swarm_peer_llm_offline':
+      handleSwarmPeerLlmOffline(msg);
+      break;
+    case 'swarm_peer_llm_online':
+      handleSwarmPeerLlmOnline(msg);
+      break;
     case 'error':
       handleError(msg);
       break;
@@ -149,6 +173,19 @@ function handleWelcome(msg) {
   $('settingsAgentName').value = agent.name || '';
   $('settingsLlmModel').value = agent.model || '';
   addSystemMessage('Connected to relay server');
+
+  // OpenClaw home / gateway / LLM offline — initial snapshot
+  if (msg.openclawHome) handleOpenClawHomeStatus({ home: msg.openclawHome });
+  if (msg.gatewayStatus) handleGatewayStatus({ status: msg.gatewayStatus });
+  if (msg.llmOffline?.offline) {
+    handleSwarmPeerLlmOffline({ self: true, reason: msg.llmOffline.reason, detail: msg.llmOffline.detail });
+  }
+
+  // LLM autoconfig'den baseUrl/model'i info panelinde de göster
+  if (msg.llmAutoConfig) {
+    $('infoAgentModel').textContent = msg.llmAutoConfig.model || '—';
+    $('infoAgentProvider').textContent = msg.llmAutoConfig.providerName || '—';
+  }
 }
 
 // --- Session Created ---
@@ -263,6 +300,229 @@ function handleConnectionStatus(msg) {
 // --- Error ---
 function handleError(msg) {
   addSystemMessage(`Error: ${msg.message || msg.error || 'Unknown error'}`);
+}
+
+// ============================================================
+// OpenClaw Home + Gateway Status Handlers
+// ============================================================
+
+// --- Runtime state for status chips ---
+let openclawHomeState = null;
+let gatewayStatusState = null;
+
+function handleOpenClawHomeStatus(msg) {
+  openclawHomeState = msg.home || null;
+  const chip = $('chipOpenClawHome');
+  const valueEl = $('chipOpenClawHomeValue');
+  if (!openclawHomeState || !openclawHomeState.resolved) {
+    chip.classList.remove('status-ok', 'status-warn', 'status-bad');
+    chip.classList.add('status-bad');
+    valueEl.textContent = 'not set';
+    // Hata mesajı varsa modal input'una koy
+    if (msg.error) {
+      const err = $('modalOpenClawHomeError');
+      err.textContent = msg.error;
+      err.classList.add('show');
+    }
+    // İlk bağlantıda otomatik wizard aç
+    if (!window.__openclawWizardShown) {
+      window.__openclawWizardShown = true;
+      openOpenClawHomeModal();
+    }
+    return;
+  }
+  chip.classList.remove('status-warn', 'status-bad', 'status-unknown');
+  chip.classList.add('status-ok');
+  const shortPath = truncatePath(openclawHomeState.path, 32);
+  valueEl.textContent = shortPath;
+  chip.title = `${openclawHomeState.path} (source: ${openclawHomeState.source})`;
+  // Wizard açıksa ve artık resolved ise kapat
+  if ($('modalOpenClawHome').classList.contains('show')) {
+    closeOpenClawHomeModal();
+  }
+}
+
+function handleGatewayStatus(msg) {
+  gatewayStatusState = msg.status || null;
+  const chip = $('chipGateway');
+  const valueEl = $('chipGatewayValue');
+  const actionBtn = $('chipGatewayAction');
+
+  chip.classList.remove('status-ok', 'status-warn', 'status-bad', 'status-unknown');
+  if (!gatewayStatusState) {
+    chip.classList.add('status-unknown');
+    valueEl.textContent = 'checking…';
+    actionBtn.style.display = 'none';
+    return;
+  }
+
+  const h = gatewayStatusState.health;
+  if (h === 'running') {
+    chip.classList.add('status-ok');
+    valueEl.textContent = `${gatewayStatusState.host}:${gatewayStatusState.port}`;
+    actionBtn.style.display = 'none';
+  } else if (h === 'tcp-only') {
+    chip.classList.add('status-warn');
+    valueEl.textContent = 'TCP open, HTTP not responding';
+    actionBtn.textContent = 'Info';
+    actionBtn.style.display = 'inline-block';
+  } else {
+    chip.classList.add('status-bad');
+    valueEl.textContent = gatewayStatusState.summary || 'offline';
+    actionBtn.textContent = 'Setup';
+    actionBtn.style.display = 'inline-block';
+  }
+  chip.title = gatewayStatusState.summary || '';
+}
+
+function handleGatewayLog(msg) {
+  const prefix = msg.stream === 'stderr' ? '[gateway!] ' : '[gateway] ';
+  console.log(prefix + (msg.line || '').trimEnd());
+}
+
+function handleGatewayStartFailed(msg) {
+  addSystemMessage(`Gateway start failed: ${msg.error || 'unknown'}`);
+  // Setup modal'ını aç — kullanıcı platforma özel talimatları görsün
+  openGatewaySetupModal();
+}
+
+function handleSwarmPeerLlmOffline(msg) {
+  const chip = $('chipLlm');
+  const valueEl = $('chipLlmValue');
+  chip.classList.remove('status-ok', 'status-warn', 'status-unknown');
+  chip.classList.add('status-bad');
+  if (msg.self) {
+    valueEl.textContent = `offline (${msg.reason || 'unknown'})`;
+    chip.title = msg.detail || 'LLM offline — listener-only mode';
+    addSystemMessage(`This peer is now in listener-only mode (${msg.reason || 'unknown'}) — incoming messages still shown, but no auto-responses.`);
+  } else {
+    valueEl.textContent = `peer offline: ${msg.agentName || msg.peerId || 'unknown'}`;
+    chip.title = `${msg.agentName || msg.peerId} is in listener-only mode: ${msg.detail}`;
+    addSystemMessage(`Peer ${msg.agentName || msg.peerId || 'unknown'} is in listener-only mode (${msg.reason || 'unknown'}).`);
+  }
+}
+
+function handleSwarmPeerLlmOnline(msg) {
+  if (!msg.self) return;  // Şimdilik self recovery'yi yansıtıyoruz
+  const chip = $('chipLlm');
+  const valueEl = $('chipLlmValue');
+  chip.classList.remove('status-bad', 'status-warn', 'status-unknown');
+  chip.classList.add('status-ok');
+  valueEl.textContent = 'ready';
+  chip.title = 'LLM reachable';
+  addSystemMessage('LLM back online — auto-responses enabled.');
+}
+
+// --- Modal + action helpers ---
+
+function openOpenClawHomeModal() {
+  const overlay = $('modalOpenClawHome');
+  const input = $('modalOpenClawHomeInput');
+  const err = $('modalOpenClawHomeError');
+  const subtitle = $('modalOpenClawHomeSubtitle');
+
+  // Mevcut path varsa placeholder olarak göster
+  if (openclawHomeState?.path) {
+    input.value = openclawHomeState.path;
+    subtitle.innerHTML = 'Change your OpenClaw home folder. Path must contain <code>openclaw.json</code> or a <code>workspace/</code> directory.';
+    $('modalOpenClawHomeTitle').textContent = 'Change OpenClaw Folder';
+  } else {
+    input.value = '';
+    subtitle.innerHTML = 'OpenClaw home couldn\'t be detected. Enter the full path to your OpenClaw folder (contains <code>openclaw.json</code> or a <code>workspace/</code> directory). Typical location: <code>~/.openclaw</code>';
+    $('modalOpenClawHomeTitle').textContent = 'Select OpenClaw Folder';
+  }
+  err.classList.remove('show');
+  overlay.classList.add('show');
+  setTimeout(() => input.focus(), 50);
+}
+
+function closeOpenClawHomeModal() {
+  $('modalOpenClawHome').classList.remove('show');
+}
+
+function submitOpenClawHome() {
+  const input = $('modalOpenClawHomeInput');
+  const value = input.value.trim();
+  if (!value) return;
+  $('modalOpenClawHomeError').classList.remove('show');
+  send('set_openclaw_home', { path: value });
+}
+
+function autoDetectOpenClawHome() {
+  // Server tarafında zaten bir sonraki probe'da çözecek — biz sadece mevcut
+  // seçimi temizlemek istersek persist clear yapmamız gerek. Basit yol:
+  // set_openclaw_home'a ~/.openclaw gönder.
+  send('set_openclaw_home', { path: '~/.openclaw' });
+}
+
+function openGatewaySetupModal() {
+  const overlay = $('modalGatewaySetup');
+  const primary = $('hintListPrimary');
+  const alts = $('hintListAlternatives');
+  primary.innerHTML = '';
+  alts.innerHTML = '';
+
+  const hints = gatewayStatusState?.hints || { primary: [], alternatives: [] };
+  for (const hint of hints.primary) {
+    primary.appendChild(buildHintItem(hint));
+  }
+  for (const hint of hints.alternatives) {
+    alts.appendChild(buildHintItem(hint));
+  }
+  if (gatewayStatusState?.summary) {
+    $('modalGatewaySubtitle').textContent = gatewayStatusState.summary + ' — peer is in listener-only mode.';
+  }
+  overlay.classList.add('show');
+}
+
+function closeGatewaySetupModal() {
+  $('modalGatewaySetup').classList.remove('show');
+}
+
+function buildHintItem(hint) {
+  const li = document.createElement('li');
+  li.className = 'hint-item';
+  if (hint.label && !hint.command) {
+    li.classList.add('hint-divider-line');
+    const label = document.createElement('div');
+    label.className = 'hint-label';
+    label.textContent = hint.label;
+    li.appendChild(label);
+  } else {
+    const label = document.createElement('span');
+    label.className = 'hint-label';
+    label.textContent = hint.label;
+    li.appendChild(label);
+    if (hint.command) {
+      const cmd = document.createElement('code');
+      cmd.className = 'hint-command';
+      cmd.textContent = hint.command;
+      cmd.title = 'Click to copy';
+      cmd.onclick = () => {
+        navigator.clipboard?.writeText(hint.command);
+      };
+      li.appendChild(cmd);
+    }
+  }
+  return li;
+}
+
+function retryGateway() {
+  send('retry_gateway');
+  addSystemMessage('Re-probing gateway…');
+}
+
+function requestStartGateway() {
+  send('start_gateway');
+}
+
+function handleGatewayAction() {
+  openGatewaySetupModal();
+}
+
+function truncatePath(p, max) {
+  if (!p || p.length <= max) return p || '';
+  return '…' + p.slice(p.length - max + 1);
 }
 
 // ============================================================

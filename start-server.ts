@@ -32,6 +32,8 @@ import { RelayClient, defaultRelayUrl } from './src/client/relay-client';
 import { SwarmManager, defaultSwarmConfig } from './src/swarm/swarm-manager';
 import { loadOpenClawIdentity } from './src/agent/agent';
 import { loadLLMConfig, diagnoseLLMConfig } from './src/agent/llm';
+import { resolveOpenClawHome } from './src/agent/openclaw-home';
+import { checkGatewayStatus } from './src/agent/gateway-status';
 import { auditLogger } from './src/server/audit-logger';
 
 // ─── CLI Argumanlari Parse ──────────────────────────────────────────────────
@@ -140,6 +142,16 @@ if (identity) {
   console.log(`   OpenClaw: workspace bulunamadi (varsayilan ayarlar kullaniliyor)`);
 }
 
+// OpenClaw home resolution — kullaniciya hangi klasorun kullanildigini goster
+const ocHome = resolveOpenClawHome();
+if (ocHome.resolved) {
+  console.log(`   OpenClaw Home: ${ocHome.path} (${ocHome.source})`);
+} else {
+  console.log(`   OpenClaw Home: not found — will run in listener-only mode`);
+  console.log(`     Default tried: ${ocHome.triedPlatformDefault}`);
+  console.log(`     Set via OPENCLAW_HOME env var or dashboard wizard after startup.`);
+}
+
 // ─── LLM config tanisi — erken uyari ─────────────────────────────────────
 // Konusma baslatincaya kadar beklemeden, kullaniciya simdi soyle
 const llmDiag = diagnoseLLMConfig();
@@ -164,11 +176,53 @@ let relayClient: RelayClient | null = null;
 let swarmManager: SwarmManager | null = null;
 
 server.start()
-  .then(() => {
+  .then(async () => {
     console.log(`✅ Server running!`);
     console.log(`   Dashboard: http://localhost:${config.port}`);
     console.log(`   Health:    http://localhost:${config.port}/health`);
     console.log(`   WebSocket: ws://localhost:${config.port}/dashboard`);
+
+    // ─── OpenClaw Gateway probe + platform-aware kurulum rehberi ──────────
+    // Gateway offline ise crash etmek yerine listener-only moda geçiyoruz;
+    // kullanıcı platforma özel nasıl başlatacağını terminalde görüyor.
+    try {
+      const gwStatus = await checkGatewayStatus(llmConfig.baseUrl);
+      if (gwStatus.health === 'running') {
+        console.log(`🟢 OpenClaw Gateway ready at ${gwStatus.host}:${gwStatus.port}`);
+      } else {
+        const tag = gwStatus.health === 'offline' ? '⚠' : '⚠';
+        console.log('');
+        console.log(`${tag}  OpenClaw Gateway offline (${gwStatus.summary})`);
+        console.log('   Peer will run in listener-only mode — manual chat works,');
+        console.log('   but no automatic LLM responses are generated.');
+        console.log('');
+        console.log('   Setup (your platform first, others below):');
+        for (const hint of gwStatus.hints.primary) {
+          if (hint.command) {
+            console.log(`     → ${hint.label}`);
+            console.log(`         $ ${hint.command}`);
+          } else {
+            console.log(`     → ${hint.label}`);
+          }
+        }
+        if (gwStatus.hints.alternatives.length > 0) {
+          console.log('');
+          console.log('   Other platforms:');
+          for (const hint of gwStatus.hints.alternatives) {
+            if (hint.command) {
+              console.log(`     ${hint.label}${hint.label.startsWith('—') ? '' : ':'} $ ${hint.command}`);
+            } else {
+              console.log(`     ${hint.label}`);
+            }
+          }
+        }
+        console.log('');
+        console.log('   Or open the dashboard and use the "Start Gateway" button.');
+        console.log('');
+      }
+    } catch (err) {
+      console.warn(`   Gateway probe skipped: ${err instanceof Error ? err.message : 'unknown'}`);
+    }
 
     if (startupArgs.mode === 'swarm') {
       console.log('');

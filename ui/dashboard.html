@@ -564,6 +564,177 @@
       .main { flex-direction: column; }
       .panel-left, .panel-right { width: 100%; border: none; border-bottom: 1px solid var(--border-glass); max-height: 200px; }
     }
+
+    /* === STATUS STRIP (OpenClaw home + Gateway + LLM) === */
+    .status-strip {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 8px 20px;
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border-glass);
+      font-size: 12px;
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+    .status-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border-glass);
+      cursor: default;
+      transition: background 0.15s;
+    }
+    .status-chip.clickable {
+      cursor: pointer;
+    }
+    .status-chip.clickable:hover {
+      background: var(--accent-blue-dim);
+    }
+    .status-chip.status-ok .status-led { background: var(--success); box-shadow: 0 0 6px var(--success); }
+    .status-chip.status-warn .status-led { background: var(--warning); box-shadow: 0 0 6px var(--warning); }
+    .status-chip.status-bad .status-led { background: var(--danger); box-shadow: 0 0 6px var(--danger); }
+    .status-chip.status-unknown .status-led { background: var(--text-muted); }
+    .status-led {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+    .status-label {
+      color: var(--text-secondary);
+      font-weight: 500;
+    }
+    .status-value {
+      color: var(--text-primary);
+      font-family: var(--font-mono);
+    }
+    .status-action {
+      margin-left: 4px;
+      padding: 2px 8px;
+      font-size: 11px;
+      color: var(--accent-blue);
+      background: transparent;
+      border: 1px solid var(--accent-blue);
+      border-radius: 4px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .status-action:hover {
+      background: var(--accent-blue);
+      color: var(--bg-primary);
+    }
+
+    /* === MODAL (First-run wizard + Gateway setup) === */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(10, 14, 23, 0.85);
+      backdrop-filter: blur(6px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 9999;
+    }
+    .modal-overlay.show {
+      display: flex;
+    }
+    .modal {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius);
+      padding: 24px;
+      max-width: 520px;
+      width: 92%;
+      max-height: 82vh;
+      overflow-y: auto;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+    }
+    .modal-title {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 4px;
+      color: var(--text-primary);
+    }
+    .modal-subtitle {
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-bottom: 18px;
+      line-height: 1.5;
+    }
+    .modal-section {
+      margin-bottom: 16px;
+    }
+    .modal-input {
+      width: 100%;
+      padding: 10px 12px;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border-glass);
+      border-radius: 6px;
+      color: var(--text-primary);
+      font-family: var(--font-mono);
+      font-size: 12px;
+    }
+    .modal-input:focus {
+      outline: none;
+      border-color: var(--accent-blue);
+    }
+    .modal-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+      margin-top: 20px;
+      flex-wrap: wrap;
+    }
+    .modal-error {
+      color: var(--danger);
+      font-size: 12px;
+      padding: 8px 10px;
+      background: rgba(239, 68, 68, 0.1);
+      border-radius: 4px;
+      margin-top: 8px;
+      display: none;
+    }
+    .modal-error.show {
+      display: block;
+    }
+    .hint-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    .hint-item {
+      padding: 6px 0;
+      border-bottom: 1px dashed var(--border-glass);
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .hint-item:last-child { border-bottom: none; }
+    .hint-label {
+      color: var(--text-secondary);
+      font-size: 12px;
+    }
+    .hint-command {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      background: var(--bg-tertiary);
+      padding: 4px 8px;
+      border-radius: 4px;
+      color: var(--accent-blue);
+      user-select: all;
+      cursor: pointer;
+    }
+    .hint-divider {
+      color: var(--text-muted);
+      font-size: 11px;
+      font-weight: 600;
+      padding: 8px 0 2px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
   </style>
 </head>
 <body>
@@ -585,6 +756,70 @@
       <span class="agent-counter" id="agentCounter">0/0</span>
     </div>
   </header>
+
+  <!-- STATUS STRIP: OpenClaw home + Gateway + LLM reachability -->
+  <div class="status-strip" id="statusStrip">
+    <div class="status-chip clickable status-unknown" id="chipOpenClawHome" onclick="openOpenClawHomeModal()" title="Click to change OpenClaw folder">
+      <span class="status-led"></span>
+      <span class="status-label">OpenClaw:</span>
+      <span class="status-value" id="chipOpenClawHomeValue">checking…</span>
+    </div>
+    <div class="status-chip status-unknown" id="chipGateway">
+      <span class="status-led"></span>
+      <span class="status-label">Gateway:</span>
+      <span class="status-value" id="chipGatewayValue">checking…</span>
+      <button class="status-action" id="chipGatewayAction" style="display:none;" onclick="handleGatewayAction()">Start</button>
+    </div>
+    <div class="status-chip status-unknown" id="chipLlm">
+      <span class="status-led"></span>
+      <span class="status-label">LLM:</span>
+      <span class="status-value" id="chipLlmValue">—</span>
+    </div>
+  </div>
+
+  <!-- MODAL: OpenClaw Home selector (first-run wizard + change folder) -->
+  <div class="modal-overlay" id="modalOpenClawHome">
+    <div class="modal">
+      <div class="modal-title" id="modalOpenClawHomeTitle">Select OpenClaw Folder</div>
+      <div class="modal-subtitle" id="modalOpenClawHomeSubtitle">
+        OpenClaw home couldn't be detected. Enter the full path to your OpenClaw folder
+        (contains <code>openclaw.json</code> or a <code>workspace/</code> directory).
+      </div>
+      <div class="modal-section">
+        <input class="modal-input" id="modalOpenClawHomeInput" type="text"
+               placeholder="~/.openclaw"
+               onkeydown="if(event.key==='Enter')submitOpenClawHome()">
+        <div class="modal-error" id="modalOpenClawHomeError"></div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn" onclick="closeOpenClawHomeModal()">Skip (listener-only)</button>
+        <button class="btn" onclick="autoDetectOpenClawHome()">Auto-detect</button>
+        <button class="btn btn-primary" onclick="submitOpenClawHome()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: Gateway setup guide -->
+  <div class="modal-overlay" id="modalGatewaySetup">
+    <div class="modal">
+      <div class="modal-title">OpenClaw Gateway Setup</div>
+      <div class="modal-subtitle" id="modalGatewaySubtitle">
+        The gateway isn't reachable. Your peer is running in listener-only mode —
+        incoming messages are shown but no auto-responses are generated.
+      </div>
+      <div class="modal-section">
+        <div class="hint-divider">Your platform</div>
+        <ul class="hint-list" id="hintListPrimary"></ul>
+        <div class="hint-divider" style="margin-top:16px;">Other platforms</div>
+        <ul class="hint-list" id="hintListAlternatives"></ul>
+      </div>
+      <div class="modal-actions">
+        <button class="btn" onclick="closeGatewaySetupModal()">Close</button>
+        <button class="btn" onclick="retryGateway()">Retry Probe</button>
+        <button class="btn btn-primary" onclick="requestStartGateway()">Start Gateway</button>
+      </div>
+    </div>
+  </div>
 
   <!-- MAIN -->
   <div class="main">
