@@ -39,6 +39,8 @@ import { checkGatewayStatus } from '../agent/gateway-status';
 import type { GatewayStatus } from '../agent/gateway-status';
 import { resolveOpenClawHome } from '../agent/openclaw-home';
 import type { OpenClawHomeResolution } from '../agent/openclaw-home';
+import { discoverLLMEndpoint, formatDiscoveryResult } from '../agent/endpoint-discovery';
+import type { DiscoveryResult } from '../agent/endpoint-discovery';
 import type { SwarmManager } from '../swarm/swarm-manager';
 import type { SwarmMessage } from '../swarm/protocol';
 import { SandboxFS } from './sandbox-fs';
@@ -200,6 +202,8 @@ export class WebSocketServerManager extends EventEmitter {
   private gatewayStatus: GatewayStatus | null = null;
   /** Periyodik gateway probe timer'ı (destroy'da temizlenir). */
   private gatewayProbeTimer: NodeJS.Timeout | null = null;
+  /** LLM endpoint discovery sonucu — gateway running olunca tetiklenir, agent'lara uygulanır. */
+  private llmDiscovery: DiscoveryResult | null = null;
 
   constructor(config: ServerConfig & { networkConfig?: NetworkEgressConfig }) {
     super();
@@ -580,14 +584,60 @@ export class WebSocketServerManager extends EventEmitter {
 
     // Gateway durumu LLM reachability'sini otomatik etkiler:
     // - Offline → llmOffline state'i set et (silent peer mode)
-    // - Running → önceden offline ise online'a geç
+    // - Running → önceden offline ise online'a geç + endpoint discovery
     if (status.health === 'offline' || status.health === 'unreachable') {
       if (!this.llmOffline?.offline) {
         this.notifyLlmOffline('gateway-' + status.health, status.summary);
       }
     } else if (status.health === 'running') {
       this.notifyLlmBackOnline('gateway-running');
+      // LLM endpoint discovery — gateway'in gerçek chat completions path'ini
+      // bul ve tüm agent'ların config'ini güncelle. Bir kez yapılması yeterli;
+      // ama her running transition'da yeniden çalıştırıyoruz (ucuz, idempotent).
+      this.runLLMEndpointDiscovery(llmCfg).catch((err) => {
+        console.warn('[WS Server] LLM endpoint discovery failed:', err);
+      });
     }
+  }
+
+  /**
+   * Gateway'in OpenAI-compat chat completions path'ini otomatik keşfet ve
+   * uygun agent config'ine yaz. OpenClaw Gateway farklı path'lerde çalışabiliyor
+   * (/v1, /api/v1, /__openclaw__/api/v1 vb.) — kullanıcı manuel config düzeltmesin.
+   */
+  private async runLLMEndpointDiscovery(llmCfg: LLMConfig): Promise<void> {
+    const result = await discoverLLMEndpoint(llmCfg.baseUrl, llmCfg.apiKey);
+    this.llmDiscovery = result;
+
+    if (!result.detected) {
+      console.warn(`[WS Server] ${formatDiscoveryResult(result)}`);
+      this.broadcastToDashboard({
+        type: 'llm_endpoint_discovery',
+        result,
+      });
+      return;
+    }
+
+    const changed = result.baseUrl !== llmCfg.baseUrl;
+    if (changed) {
+      console.log(`[WS Server] ${formatDiscoveryResult(result)}`);
+      console.log(`[WS Server] Updating agent LLM baseUrl: ${llmCfg.baseUrl} → ${result.baseUrl}`);
+
+      // Tüm client agent'larını yeni baseUrl ile güncelle
+      for (const agent of this.clientAgents.values()) {
+        agent.updateLLMConfig({ baseUrl: result.baseUrl });
+      }
+      if (this.swarmBackgroundAgent) {
+        this.swarmBackgroundAgent.updateLLMConfig({ baseUrl: result.baseUrl });
+      }
+    } else {
+      console.log(`[WS Server] LLM endpoint verified: ${result.baseUrl} (${result.statusCode})`);
+    }
+
+    this.broadcastToDashboard({
+      type: 'llm_endpoint_discovery',
+      result,
+    });
   }
 
   /**
@@ -1157,6 +1207,7 @@ export class WebSocketServerManager extends EventEmitter {
       openclawHome: this.ensureOpenClawHome(),
       gatewayStatus: this.gatewayStatus ?? null,
       llmOffline: this.llmOffline,
+      llmDiscovery: this.llmDiscovery,
     });
 
     // Arka planda Gateway'i probe et, sonuç dönünce push — UI hızlıca yenilensin

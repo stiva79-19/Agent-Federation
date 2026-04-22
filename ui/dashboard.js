@@ -155,6 +155,9 @@ function handleMessage(msg) {
     case 'swarm_peer_llm_online':
       handleSwarmPeerLlmOnline(msg);
       break;
+    case 'llm_endpoint_discovery':
+      handleLlmEndpointDiscovery(msg);
+      break;
     case 'error':
       handleError(msg);
       break;
@@ -180,6 +183,7 @@ function handleWelcome(msg) {
   if (msg.llmOffline?.offline) {
     handleSwarmPeerLlmOffline({ self: true, reason: msg.llmOffline.reason, detail: msg.llmOffline.detail });
   }
+  if (msg.llmDiscovery) handleLlmEndpointDiscovery({ result: msg.llmDiscovery });
 
   // LLM autoconfig'den baseUrl/model'i info panelinde de göster
   if (msg.llmAutoConfig) {
@@ -411,6 +415,20 @@ function handleSwarmPeerLlmOffline(msg) {
     if (!isDuplicate) {
       addSystemMessage(`Peer ${msg.agentName || msg.peerId || 'unknown'} is in listener-only mode (${msg.reason || 'unknown'}).`);
     }
+  }
+}
+
+function handleLlmEndpointDiscovery(msg) {
+  const r = msg.result;
+  if (!r) return;
+  if (r.detected) {
+    const modelsText = r.availableModels?.length
+      ? ` (${r.availableModels.length} models)`
+      : '';
+    addSystemMessage(`LLM endpoint discovered: ${r.baseUrl} [${r.statusCode}]${modelsText}`);
+  } else {
+    const tried = (r.attempts || []).map(a => `${a.path}:${a.status ?? a.error}`).join(', ');
+    addSystemMessage(`LLM endpoint discovery failed — no path responded. Tried: ${tried}`);
   }
 }
 
