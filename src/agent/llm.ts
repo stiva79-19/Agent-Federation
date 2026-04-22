@@ -110,11 +110,19 @@ function resolveOpenClawProvider(): { baseUrl: string; apiKey: string; model: st
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const path = require('path') as typeof import('path');
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const os = require('os') as typeof import('os');
+    const { resolveOpenClawHome } = require('./openclaw-home') as typeof import('./openclaw-home');
 
-    const workspace = process.env['OPENCLAW_WORKSPACE'] || path.join(os.homedir(), '.openclaw');
-    const configPath = path.join(workspace, 'openclaw.json');
+    // OpenClaw home'u merkezi resolver ile çöz. Env var, persistent config,
+    // platform default sırasıyla denenir — ayrıntılar için openclaw-home.ts.
+    const home = resolveOpenClawHome();
+    if (!home.resolved) return empty;
+
+    const configPath = path.join(home.path, 'openclaw.json');
     if (!fs.existsSync(configPath)) return empty;
+
+    // `workspace` değişkeni credential okuyucu için home'u temsil eder
+    // (credentials/ dizini home altında).
+    const workspace = home.path;
 
     const raw = fs.readFileSync(configPath, 'utf-8');
     const config = JSON.parse(raw) as Record<string, unknown>;
