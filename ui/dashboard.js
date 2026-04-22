@@ -128,6 +128,9 @@ function handleMessage(msg) {
     case 'connection_status':
       handleConnectionStatus(msg);
       break;
+    case 'swarm_message':
+      handleSwarmMessage(msg);
+      break;
     case 'error':
       handleError(msg);
       break;
@@ -187,6 +190,24 @@ function handlePeerLeft(msg) {
   addSystemMessage(`Peer left: ${msg.peerId || msg.agentName || 'unknown'}`);
   if (msg.peers) updatePeerList(msg.peers);
   updateAgentCounter(msg.peerCount);
+}
+
+// --- Swarm Messages (peer-to-peer broadcasts) ---
+function handleSwarmMessage(msg) {
+  const swarmMsg = msg.swarmMessage || {};
+  if (swarmMsg.type === 'agent_message') {
+    const payload = swarmMsg.payload || {};
+    const sender = (payload.from && payload.from.agentName)
+      || swarmMsg.from?.agentName
+      || msg.peerId
+      || 'Peer';
+    const content = payload.content || payload.text || '';
+    if (content) {
+      addChatMessage(sender, content, 'agent');
+    }
+  } else {
+    console.log('[WS] Unhandled swarm message type:', swarmMsg.type, swarmMsg);
+  }
 }
 
 // --- Agent Messages ---
@@ -280,7 +301,24 @@ function sendMessage() {
   input.value = '';
 
   addChatMessage('You', text, 'user');
-  send('start_conversation', { message: text });
+
+  if (sessionActive) {
+    // Swarm session aktifse → peer-to-peer broadcast gönder
+    const agentName = $('agentNameBadge').textContent || 'agent';
+    send('swarm_broadcast', {
+      swarmMessage: {
+        type: 'agent_message',
+        payload: {
+          content: text,
+          from: { agentName },
+          role: 'user',
+        },
+      },
+    });
+  } else {
+    // Swarm yoksa → LLM agent konuşma döngüsü başlat
+    send('start_conversation', { message: text });
+  }
 }
 
 function stopConversation() {
@@ -317,7 +355,17 @@ function toggleAllowAll(enabled) {
 }
 
 function broadcastMessage(text) {
-  send('swarm_broadcast', { message: text });
+  const agentName = $('agentNameBadge').textContent || 'agent';
+  send('swarm_broadcast', {
+    swarmMessage: {
+      type: 'agent_message',
+      payload: {
+        content: text,
+        from: { agentName },
+        role: 'user',
+      },
+    },
+  });
 }
 
 // ============================================================
