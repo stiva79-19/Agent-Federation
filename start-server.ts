@@ -182,43 +182,65 @@ server.start()
     console.log(`   Health:    http://localhost:${config.port}/health`);
     console.log(`   WebSocket: ws://localhost:${config.port}/dashboard`);
 
-    // ─── OpenClaw Gateway probe + platform-aware kurulum rehberi ──────────
-    // Gateway offline ise crash etmek yerine listener-only moda geçiyoruz;
-    // kullanıcı platforma özel nasıl başlatacağını terminalde görüyor.
+    // ─── OpenClaw Gateway probe + auto-start + platform-aware rehber ──────
+    // Gateway offline ise önce `openclaw gateway` komutunu otomatik tetikle;
+    // başarısız olursa listener-only moda geçer ve kullanıcıya manuel setup
+    // rehberi gösterir. `AGENT_FEDERATION_AUTOSTART_GATEWAY=false` ile kapatılır.
     try {
-      const gwStatus = await checkGatewayStatus(llmConfig.baseUrl);
+      let gwStatus = await checkGatewayStatus(llmConfig.baseUrl);
       if (gwStatus.health === 'running') {
         console.log(`🟢 OpenClaw Gateway ready at ${gwStatus.host}:${gwStatus.port}`);
       } else {
-        const tag = gwStatus.health === 'offline' ? '⚠' : '⚠';
-        console.log('');
-        console.log(`${tag}  OpenClaw Gateway offline (${gwStatus.summary})`);
-        console.log('   Peer will run in listener-only mode — manual chat works,');
-        console.log('   but no automatic LLM responses are generated.');
-        console.log('');
-        console.log('   Setup (your platform first, others below):');
-        for (const hint of gwStatus.hints.primary) {
-          if (hint.command) {
-            console.log(`     → ${hint.label}`);
-            console.log(`         $ ${hint.command}`);
-          } else {
-            console.log(`     → ${hint.label}`);
+        const autostartEnabled = process.env['AGENT_FEDERATION_AUTOSTART_GATEWAY'] !== 'false';
+        let autostartSucceeded = false;
+
+        if (autostartEnabled) {
+          console.log('');
+          console.log(`⏳ Gateway offline — attempting auto-start (openclaw gateway)…`);
+          autostartSucceeded = await attemptAutoStartGateway(llmConfig.baseUrl);
+          if (autostartSucceeded) {
+            gwStatus = await checkGatewayStatus(llmConfig.baseUrl);
+            console.log(`🟢 OpenClaw Gateway ready at ${gwStatus.host}:${gwStatus.port} (auto-started)`);
           }
         }
-        if (gwStatus.hints.alternatives.length > 0) {
+
+        if (!autostartSucceeded) {
+          const tag = gwStatus.health === 'offline' ? '⚠' : '⚠';
           console.log('');
-          console.log('   Other platforms:');
-          for (const hint of gwStatus.hints.alternatives) {
+          console.log(`${tag}  OpenClaw Gateway offline (${gwStatus.summary})`);
+          if (autostartEnabled) {
+            console.log('   Auto-start failed — "openclaw" CLI not found in PATH or gateway did not boot in time.');
+          } else {
+            console.log('   Auto-start disabled (AGENT_FEDERATION_AUTOSTART_GATEWAY=false).');
+          }
+          console.log('   Peer will run in listener-only mode — manual chat works,');
+          console.log('   but no automatic LLM responses are generated.');
+          console.log('');
+          console.log('   Setup (your platform first, others below):');
+          for (const hint of gwStatus.hints.primary) {
             if (hint.command) {
-              console.log(`     ${hint.label}${hint.label.startsWith('—') ? '' : ':'} $ ${hint.command}`);
+              console.log(`     → ${hint.label}`);
+              console.log(`         $ ${hint.command}`);
             } else {
-              console.log(`     ${hint.label}`);
+              console.log(`     → ${hint.label}`);
             }
           }
+          if (gwStatus.hints.alternatives.length > 0) {
+            console.log('');
+            console.log('   Other platforms:');
+            for (const hint of gwStatus.hints.alternatives) {
+              if (hint.command) {
+                console.log(`     ${hint.label}${hint.label.startsWith('—') ? '' : ':'} $ ${hint.command}`);
+              } else {
+                console.log(`     ${hint.label}`);
+              }
+            }
+          }
+          console.log('');
+          console.log('   Or open the dashboard and use the "Start Gateway" button.');
+          console.log('   To disable auto-start: AGENT_FEDERATION_AUTOSTART_GATEWAY=false');
+          console.log('');
         }
-        console.log('');
-        console.log('   Or open the dashboard and use the "Start Gateway" button.');
-        console.log('');
       }
     } catch (err) {
       console.warn(`   Gateway probe skipped: ${err instanceof Error ? err.message : 'unknown'}`);
@@ -350,4 +372,92 @@ function shutdown(): void {
 }
 
 process.on('SIGINT', shutdown);
+
+// ─── Gateway Auto-Start ─────────────────────────────────────────────────────
+
+/**
+ * `openclaw gateway` komutunu arka planda spawn eder, gateway running'e
+ * geçene kadar 10 saniye kadar bekler (1s interval probe). Başarı: true;
+ * CLI yok veya gateway ayağa kalkmadı: false döner.
+ *
+ * Detached + unref: bu Node process kapansa bile gateway yaşar.
+ * stdout/stderr forward edilir (kullanıcı loglarını terminal'de görür).
+ */
+async function attemptAutoStartGateway(baseUrl: string): Promise<boolean> {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { spawn } = require('child_process') as typeof import('child_process');
+  const { checkGatewayStatus: probe } = await import('./src/agent/gateway-status');
+
+  return new Promise<boolean>((resolve) => {
+    let resolved = false;
+    const done = (ok: boolean) => {
+      if (resolved) return;
+      resolved = true;
+      resolve(ok);
+    };
+
+    let proc: import('child_process').ChildProcess;
+    try {
+      proc = spawn('openclaw', ['gateway'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        shell: process.platform === 'win32',
+        detached: true,
+      });
+    } catch (err) {
+      console.log(`   Auto-start failed: ${(err as Error).message}`);
+      done(false);
+      return;
+    }
+
+    proc.stdout?.on('data', (d: Buffer) => {
+      const line = d.toString().trimEnd();
+      if (line) console.log(`[gateway] ${line}`);
+    });
+    proc.stderr?.on('data', (d: Buffer) => {
+      const line = d.toString().trimEnd();
+      if (line) console.log(`[gateway!] ${line}`);
+    });
+
+    proc.on('error', (err: NodeJS.ErrnoException) => {
+      if (err.code === 'ENOENT') {
+        console.log(`   "openclaw" not found in PATH — install OpenClaw CLI or set AGENT_FEDERATION_AUTOSTART_GATEWAY=false`);
+      } else {
+        console.log(`   Auto-start error: ${err.message}`);
+      }
+      done(false);
+    });
+
+    proc.on('exit', (code, signal) => {
+      // Gateway spawn hemen exit ederse fail
+      if (!resolved) {
+        console.log(`   Gateway process exited prematurely (code=${code}, signal=${signal ?? 'none'}).`);
+        done(false);
+      }
+    });
+
+    // Parent'tan decouple — Node eventloop'u için ref olma
+    proc.unref();
+
+    // 10 saniye polling — her saniye TCP probe; running'e geçince done(true)
+    let attempts = 0;
+    const maxAttempts = 10;
+    const poll = async () => {
+      if (resolved) return;
+      attempts++;
+      try {
+        const status = await probe(baseUrl);
+        if (status.health === 'running') {
+          done(true);
+          return;
+        }
+      } catch { /* ignore */ }
+      if (attempts >= maxAttempts) {
+        done(false);
+        return;
+      }
+      setTimeout(poll, 1000);
+    };
+    setTimeout(poll, 1500); // Gateway'e boot için 1.5 sn fırsat
+  });
+}
 process.on('SIGTERM', shutdown);
